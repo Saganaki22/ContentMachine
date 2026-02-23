@@ -57,10 +57,12 @@ export const usePipelineStore = create(
       selectedImages: {},
       imagesLoading: {},
       imagesError: null,
+      imageBatches: [],        // [{ batchIndex, sceneNumbers, status: 'pending'|'running'|'done'|'failed', error }]
 
       videoPrompts: [],
       videoPromptsLoading: false,
       videoPromptsError: null,
+      videoBatches: [],        // [{ batchIndex, sceneNumbers, status: 'pending'|'running'|'done'|'failed', error }]
       videoJobs: {},
       selectedVideos: {},
       ttsScript: null,
@@ -181,6 +183,8 @@ export const usePipelineStore = create(
         videoPromptsError: null,
         scenePlanError: null,
         ttsError: null,
+        imageBatches: [],
+        videoBatches: [],
       }),
 
       checkShouldStop: () => {
@@ -231,7 +235,8 @@ export const usePipelineStore = create(
           set({
             scenePlanLoading: false,
             scenePlanError: error.message,
-            generationState: 'stopped'
+            generationState: 'stopped',
+            generationPhase: null
           })
           throw error
         }
@@ -243,9 +248,12 @@ export const usePipelineStore = create(
       },
 
       // ─── Image Prompts & Generation ───────────────────────────────────────
+      // How many scenes per LLM batch (keeps output tokens within the 16k limit)
+      IMAGE_PROMPT_BATCH_SIZE: 10,
+
       fetchImagePrompts: async (scenePlan, resumeFromPending = false) => {
         const plan = scenePlan || get().scenePlan
-        const { settings, imageProgress } = get()
+        const { settings } = get()
         if (!plan) return
 
         if (!resumeFromPending) {
@@ -254,18 +262,76 @@ export const usePipelineStore = create(
             images: {},
             selectedImages: {},
             imagesError: null,
+            imageBatches: [],
             generationPhase: 'images'
           })
         }
 
         try {
-          let scenes = get().scenes
-          if (!resumeFromPending && scenes.length === 0) {
-            const rawScenes = await api.generateImagePrompts(
-              plan, settings.aspectRatio, settings.claudeProvider, settings.claudeModel, get().customPrompts.imagePrompts
-            )
+          // ── Step 1: Generate image prompts from Claude (batched by scene) ──────
+        let scenes = get().scenes
+        // If resuming but scenes are empty (all batches failed), fall back to full fetch
+        if (resumeFromPending && scenes.length === 0) {
+          return get().fetchImagePrompts(plan, false)
+        }
+        if (!resumeFromPending && scenes.length === 0) {
+            const planScenes = plan.scenes || []
+            const batchSize = get().IMAGE_PROMPT_BATCH_SIZE
+            const batches = []
+            for (let i = 0; i < planScenes.length; i += batchSize) {
+              batches.push(planScenes.slice(i, i + batchSize))
+            }
 
-            scenes = rawScenes.map(scene => ({
+            // Initialise batch status tracking
+            const batchStatuses = batches.map((b, i) => ({
+              batchIndex: i,
+              sceneNumbers: b.map(s => s.scene_number),
+              status: 'pending',
+              error: null,
+            }))
+            set({ imageBatches: batchStatuses })
+
+            const allRawScenes = []
+            for (let bi = 0; bi < batches.length; bi++) {
+              if (get().checkShouldStop()) break
+
+              // Mark batch as running
+              set(state => ({
+                imageBatches: state.imageBatches.map(b =>
+                  b.batchIndex === bi ? { ...b, status: 'running' } : b
+                )
+              }))
+
+              try {
+                const rawScenes = await api.generateImagePrompts(
+                  null,
+                  settings.aspectRatio,
+                  settings.claudeProvider,
+                  settings.claudeModel,
+                  get().customPrompts.imagePrompts,
+                  batches[bi]   // scenesOverride — send just this batch
+                )
+                allRawScenes.push(...rawScenes)
+
+                set(state => ({
+                  imageBatches: state.imageBatches.map(b =>
+                    b.batchIndex === bi ? { ...b, status: 'done' } : b
+                  )
+                }))
+              } catch (batchErr) {
+                set(state => ({
+                  imageBatches: state.imageBatches.map(b =>
+                    b.batchIndex === bi ? { ...b, status: 'failed', error: batchErr.message } : b
+                  )
+                }))
+                // Continue to next batch — failed ones can be retried individually
+              }
+
+              // Small pause between LLM calls
+              if (bi < batches.length - 1) await new Promise(r => setTimeout(r, 500))
+            }
+
+            scenes = allRawScenes.map(scene => ({
               scene_number: scene.scene_number,
               scene_title: scene.variations?.[0]?.type || `Scene ${scene.scene_number}`,
               scene_description: scene.variations?.[0]?.prompt?.substring(0, 100) || '',
@@ -276,6 +342,7 @@ export const usePipelineStore = create(
             set({ scenes })
           }
 
+          // ── Step 2: Generate the actual images scene-by-scene ─────────────────
           const allPrompts = scenes.flatMap(scene =>
             scene.prompts.map((prompt, idx) => ({
               sceneNumber: scene.scene_number,
@@ -284,6 +351,7 @@ export const usePipelineStore = create(
             }))
           )
 
+          const { imageProgress } = get()
           let promptsToProcess = allPrompts
 
           if (resumeFromPending && imageProgress.pending.length > 0) {
@@ -314,7 +382,7 @@ export const usePipelineStore = create(
           })
           set({ imagesLoading: loadingUpdate })
 
-          // Group prompts by scene for scene-by-scene processing
+          // Group prompts by scene
           const promptsByScene = {}
           promptsToProcess.forEach(p => {
             if (!promptsByScene[p.sceneNumber]) promptsByScene[p.sceneNumber] = []
@@ -322,7 +390,6 @@ export const usePipelineStore = create(
           })
           const sceneNumbers = Object.keys(promptsByScene).map(Number).sort((a, b) => a - b)
 
-          // Process each scene - send all variations in that scene together
           for (const sceneNum of sceneNumbers) {
             if (get().checkShouldStop()) {
               const remaining = sceneNumbers
@@ -339,21 +406,10 @@ export const usePipelineStore = create(
             const scenePromptTexts = scenePrompts.map(p => p.prompt)
 
             try {
-              // Send ALL prompts for this scene in one request
-              console.log('Calling generateImages with:', {
-                promptCount: scenePromptTexts.length,
-                provider: settings.imageProvider,
-                model: settings.imageModel,
-                aspectRatio: settings.aspectRatio
-              })
-              
               const results = await api.generateImages(
                 scenePromptTexts, settings.imageProvider, settings.imageModel, settings.aspectRatio
               )
-              
-              console.log('generateImages results:', results)
 
-              // Convert CDN URLs to base64 so they survive in the saved JSON
               const base64Urls = await Promise.all(
                 results.map(r => r?.url ? toBase64DataUri(r.url) : Promise.resolve(null))
               )
@@ -386,7 +442,6 @@ export const usePipelineStore = create(
                 }
               })
             } catch (error) {
-              // Scene failed — mark all in scene as errored
               const imageUpdates = {}
               const keys = []
               scenePrompts.forEach(({ sceneNumber, promptIndex, prompt }) => {
@@ -404,11 +459,9 @@ export const usePipelineStore = create(
               })
             }
 
-            // Small delay between scenes to avoid rate limiting
             await new Promise(r => setTimeout(r, 800))
           }
 
-          // All done — ensure loading is cleared
           set({ imagesLoading: {} })
 
         } catch (error) {
@@ -422,8 +475,140 @@ export const usePipelineStore = create(
         }
       },
 
+      // Retry a single failed batch (re-runs just those scenes through the LLM + image generation)
+      retryImageBatch: async (batchIndex) => {
+        const { scenePlan, imageBatches, settings } = get()
+        const batch = imageBatches[batchIndex]
+        if (!batch || !scenePlan) return
+
+        const batchScenes = scenePlan.scenes.filter(s => batch.sceneNumbers.includes(s.scene_number))
+
+        if (batchScenes.length === 0) {
+          console.warn(`retryImageBatch: no scenes found for batch ${batchIndex} (numbers: ${batch.sceneNumbers})`)
+          return
+        }
+
+        set(state => ({
+          imageBatches: state.imageBatches.map(b =>
+            b.batchIndex === batchIndex ? { ...b, status: 'running', error: null } : b
+          )
+        }))
+
+        try {
+          const rawScenes = await api.generateImagePrompts(
+            null,
+            settings.aspectRatio,
+            settings.claudeProvider,
+            settings.claudeModel,
+            get().customPrompts.imagePrompts,
+            batchScenes
+          )
+
+          const newSceneData = rawScenes.map(scene => ({
+            scene_number: scene.scene_number,
+            scene_title: scene.variations?.[0]?.type || `Scene ${scene.scene_number}`,
+            scene_description: scene.variations?.[0]?.prompt?.substring(0, 100) || '',
+            prompts: scene.variations?.map(v => v.prompt) || [],
+            continuity_checklist: scene.continuity_checklist || []
+          }))
+
+          // Merge into existing scenes
+          set(state => {
+            const mergedScenes = [...state.scenes]
+            newSceneData.forEach(ns => {
+              const idx = mergedScenes.findIndex(s => s.scene_number === ns.scene_number)
+              if (idx >= 0) mergedScenes[idx] = ns
+              else mergedScenes.push(ns)
+            })
+            mergedScenes.sort((a, b) => a.scene_number - b.scene_number)
+            return {
+              scenes: mergedScenes,
+              imageBatches: state.imageBatches.map(b =>
+                b.batchIndex === batchIndex ? { ...b, status: 'done', error: null } : b
+              )
+            }
+          })
+
+          // Now generate the images for those scenes
+          const allPrompts = newSceneData.flatMap(scene =>
+            scene.prompts.map((prompt, idx) => ({
+              sceneNumber: scene.scene_number,
+              promptIndex: idx,
+              prompt
+            }))
+          )
+
+          // Ensure these keys are tracked in imageProgress (they may have been absent
+          // if the batch failed before images were ever queued on the first attempt)
+          const retryKeys = allPrompts.map(p => `${p.sceneNumber}_${p.promptIndex}`)
+          set(state => {
+            const existingCompleted = new Set(state.imageProgress.completed)
+            const newPendingKeys = retryKeys.filter(k => !existingCompleted.has(k))
+            const existingPending = new Set(state.imageProgress.pending)
+            const mergedPending = [...existingPending, ...newPendingKeys.filter(k => !existingPending.has(k))]
+            // Use the canonical total from scenes store rather than growing Math.max
+            const canonicalTotal = get().scenes.reduce((sum, s) => sum + (s.prompts?.length || 0), 0)
+            const total = canonicalTotal > 0 ? canonicalTotal : existingCompleted.size + mergedPending.length
+            return {
+              imageProgress: {
+                total,
+                completed: state.imageProgress.completed,
+                pending: mergedPending
+              }
+            }
+          })
+
+          for (const { sceneNumber, promptIndex, prompt } of allPrompts) {
+            const key = `${sceneNumber}_${promptIndex}`
+            set(state => ({ imagesLoading: { ...state.imagesLoading, [key]: true } }))
+            try {
+              const results = await api.generateImages(
+                [prompt], settings.imageProvider, settings.imageModel, settings.aspectRatio
+              )
+              const base64Url = results[0]?.url ? await toBase64DataUri(results[0].url) : null
+              set(state => {
+                const newLoading = { ...state.imagesLoading }
+                delete newLoading[key]
+                return {
+                  images: { ...state.images, [key]: { url: base64Url || results[0]?.url || null, prompt, error: null, loading: false } },
+                  imagesLoading: newLoading,
+                  imageProgress: {
+                    ...state.imageProgress,
+                    completed: [...new Set([...state.imageProgress.completed, key])],
+                    pending: state.imageProgress.pending.filter(k => k !== key)
+                  }
+                }
+              })
+            } catch (err) {
+              set(state => {
+                const newLoading = { ...state.imagesLoading }
+                delete newLoading[key]
+                return {
+                  images: { ...state.images, [key]: { url: null, prompt, error: err.message, loading: false } },
+                  imagesLoading: newLoading,
+                  // Remove from pending even on error — it's done (failed), not still waiting
+                  imageProgress: {
+                    ...state.imageProgress,
+                    pending: state.imageProgress.pending.filter(k => k !== key)
+                  }
+                }
+              })
+            }
+            await new Promise(r => setTimeout(r, 500))
+          }
+        } catch (err) {
+          set(state => ({
+            imageBatches: state.imageBatches.map(b =>
+              b.batchIndex === batchIndex ? { ...b, status: 'failed', error: err.message } : b
+            )
+          }))
+        }
+      },
+
       retryImagePrompts: () => {
-        set({ imagesError: null })
+        // Reset generationState to 'running' so checkShouldStop() returns false
+        // inside fetchImagePrompts — without this the image loop exits immediately
+        set({ imagesError: null, imageBatches: [], generationState: 'running', generationPhase: 'images' })
         get().fetchImagePrompts(null, false)
       },
 
@@ -508,11 +693,15 @@ export const usePipelineStore = create(
         })
         set({ imagesLoading: loadingUpdate })
 
-        // Reset progress
+        // Reset progress and set state to running so checkShouldStop() returns false
         const allKeys = sceneNumbers.flatMap(s => 
           promptsByScene[s].map(p => `${p.sceneNumber}_${p.promptIndex}`)
         )
-        set({ imageProgress: { total: allKeys.length, completed: [], pending: allKeys } })
+        set({
+          imageProgress: { total: allKeys.length, completed: [], pending: allKeys },
+          generationState: 'running',
+          generationPhase: 'images'
+        })
 
         // Process each scene
         for (const sceneNum of sceneNumbers) {
@@ -605,6 +794,9 @@ export const usePipelineStore = create(
       },
 
       // ─── Video Prompts ────────────────────────────────────────────────────
+      // How many scenes per LLM batch (video prompts are larger than image prompts)
+      VIDEO_PROMPT_BATCH_SIZE: 8,
+
       fetchVideoPrompts: async () => {
         const { scenePlan, selectedImages, settings } = get()
         if (!scenePlan) return
@@ -615,46 +807,190 @@ export const usePipelineStore = create(
           // url intentionally excluded — base64 data would exceed Express body limit
         }))
 
-        set({ videoPromptsLoading: true, videoPromptsError: null, generationPhase: 'videoPrompts' })
-        try {
-          const videoPrompts = await api.generateVideoPrompts(
-            scenePlan, selectedImagesArray, settings.claudeProvider, settings.claudeModel, get().customPrompts.videoPrompts
-          )
+        const planScenes = scenePlan.scenes || []
+        const batchSize = get().VIDEO_PROMPT_BATCH_SIZE
+        const batches = []
+        for (let i = 0; i < planScenes.length; i += batchSize) {
+          batches.push(planScenes.slice(i, i + batchSize))
+        }
 
-          const enrichedPrompts = videoPrompts.map(vp => {
-            const sceneFromPlan = scenePlan.scenes?.find(s => s.scene_number === vp.scene_number)
+        const batchStatuses = batches.map((b, i) => ({
+          batchIndex: i,
+          sceneNumbers: b.map(s => s.scene_number),
+          status: 'pending',
+          error: null,
+        }))
+
+        set({
+          videoPromptsLoading: true,
+          videoPromptsError: null,
+          videoBatches: batchStatuses,
+          videoPrompts: [],
+          generationPhase: 'videoPrompts'
+        })
+
+        try {
+          const allRawPrompts = []
+
+          for (let bi = 0; bi < batches.length; bi++) {
+            if (get().checkShouldStop()) break
+
+            set(state => ({
+              videoBatches: state.videoBatches.map(b =>
+                b.batchIndex === bi ? { ...b, status: 'running' } : b
+              )
+            }))
+
+            try {
+              const batchPrompts = await api.generateVideoPrompts(
+                null,
+                selectedImagesArray,
+                settings.claudeProvider,
+                settings.claudeModel,
+                get().customPrompts.videoPrompts,
+                batches[bi]   // scenesOverride — just this batch
+              )
+              const arr = Array.isArray(batchPrompts) ? batchPrompts : []
+              allRawPrompts.push(...arr)
+
+              set(state => ({
+                videoBatches: state.videoBatches.map(b =>
+                  b.batchIndex === bi ? { ...b, status: 'done' } : b
+                )
+              }))
+            } catch (batchErr) {
+              set(state => ({
+                videoBatches: state.videoBatches.map(b =>
+                  b.batchIndex === bi ? { ...b, status: 'failed', error: batchErr.message } : b
+                )
+              }))
+              // Continue — failed batches can be retried individually
+            }
+
+            if (bi < batches.length - 1) await new Promise(r => setTimeout(r, 500))
+          }
+
+          const enrichedPrompts = allRawPrompts.map(vp => {
+            const sceneFromPlan = planScenes.find(s => s.scene_number === vp.scene_number)
             return {
               ...vp,
               duration_seconds: vp.duration_seconds || sceneFromPlan?.duration_seconds || 6,
               visual_description: sceneFromPlan?.visual_description,
-              // Normalise prompt field to always be the full string
-              full_prompt_string: vp.full_prompt_string || vp.video_prompt?.full_prompt_string || vp.video_prompt || ''
+              full_prompt_string: vp.full_prompt_string
+                || (typeof vp.video_prompt?.full_prompt_string === 'string' ? vp.video_prompt.full_prompt_string : '')
+                || (typeof vp.video_prompt === 'string' ? vp.video_prompt : '')
             }
           })
 
           set({ videoPrompts: enrichedPrompts, videoPromptsLoading: false })
           return enrichedPrompts
         } catch (error) {
-          set({ videoPromptsLoading: false, videoPromptsError: error.message })
+          set({ videoPromptsLoading: false, videoPromptsError: error.message, generationPhase: null })
           throw error
         }
       },
 
       retryVideoPrompts: () => {
-        set({ videoPromptsError: null })
+        set({ videoPromptsError: null, videoBatches: [], videoPrompts: [] })
         return get().fetchVideoPrompts()
+      },
+
+      retryVideoBatch: async (batchIndex) => {
+        const { scenePlan, selectedImages, videoBatches, settings } = get()
+        const batch = videoBatches[batchIndex]
+        if (!batch || !scenePlan) return
+
+        const batchScenes = scenePlan.scenes.filter(s => batch.sceneNumbers.includes(s.scene_number))
+        if (batchScenes.length === 0) {
+          console.warn(`retryVideoBatch: no scenes found for batch ${batchIndex}`)
+          return
+        }
+
+        const selectedImagesArray = Object.entries(selectedImages).map(([sceneNum, img]) => ({
+          scene_number: parseInt(sceneNum),
+          prompt: img.prompt
+        }))
+
+        set(state => ({
+          videoBatches: state.videoBatches.map(b =>
+            b.batchIndex === batchIndex ? { ...b, status: 'running', error: null } : b
+          )
+        }))
+
+        try {
+          const batchPrompts = await api.generateVideoPrompts(
+            null,
+            selectedImagesArray,
+            settings.claudeProvider,
+            settings.claudeModel,
+            get().customPrompts.videoPrompts,
+            batchScenes
+          )
+          const arr = Array.isArray(batchPrompts) ? batchPrompts : []
+
+          const enriched = arr.map(vp => {
+            const sceneFromPlan = scenePlan.scenes.find(s => s.scene_number === vp.scene_number)
+            return {
+              ...vp,
+              duration_seconds: vp.duration_seconds || sceneFromPlan?.duration_seconds || 6,
+              visual_description: sceneFromPlan?.visual_description,
+              full_prompt_string: vp.full_prompt_string
+                || (typeof vp.video_prompt?.full_prompt_string === 'string' ? vp.video_prompt.full_prompt_string : '')
+                || (typeof vp.video_prompt === 'string' ? vp.video_prompt : '')
+            }
+          })
+
+          // Merge into existing videoPrompts
+          set(state => {
+            const merged = [...state.videoPrompts]
+            enriched.forEach(vp => {
+              const idx = merged.findIndex(v => v.scene_number === vp.scene_number)
+              if (idx >= 0) merged[idx] = vp
+              else merged.push(vp)
+            })
+            merged.sort((a, b) => a.scene_number - b.scene_number)
+            return {
+              videoPrompts: merged,
+              videoBatches: state.videoBatches.map(b =>
+                b.batchIndex === batchIndex ? { ...b, status: 'done', error: null } : b
+              )
+            }
+          })
+        } catch (err) {
+          set(state => ({
+            videoBatches: state.videoBatches.map(b =>
+              b.batchIndex === batchIndex ? { ...b, status: 'failed', error: err.message } : b
+            )
+          }))
+          // Don't re-throw — UI already shows the batch error; re-throwing causes unhandled
+          // rejections in callers that don't have a try/catch. Consistent with retryImageBatch.
+        }
       },
 
       // ─── Video Generation ─────────────────────────────────────────────────
       startVideoGeneration: async (videoPrompts, resumeFromPending = false) => {
-        const { selectedImages, settings, videoProgress, videoJobs } = get()
+        const { selectedImages, images, settings, videoProgress } = get()
+        // Don't snapshot videoJobs here — read it fresh after the async API call
+        // to avoid overwriting concurrent store mutations (e.g. regenerateVideo)
 
-        let scenesToProcess = videoPrompts.map(vp => ({
-          scene_number: vp.scene_number,
-          video_prompt: vp.full_prompt_string || '',
-          duration_seconds: vp.duration_seconds || 6,
-          image_url: selectedImages[vp.scene_number]?.url
-        }))
+        let scenesToProcess = videoPrompts.map(vp => {
+          // selectedImages[n].url is stripped from localStorage persist (base64 blobs
+          // would blow out the storage limit). Fall back to the images store which
+          // retains the full URL/base64 via a separate persist entry.
+          const selectedImg = selectedImages[vp.scene_number]
+          const imageKey = selectedImg
+            ? `${vp.scene_number}_${selectedImg.promptIndex ?? 0}`
+            : null
+          const image_url = selectedImg?.url
+            || (imageKey && images[imageKey]?.url)
+            || null
+          return {
+            scene_number: vp.scene_number,
+            video_prompt: vp.full_prompt_string || '',
+            duration_seconds: vp.duration_seconds || 6,
+            image_url
+          }
+        })
 
         if (resumeFromPending && videoProgress.pending.length > 0) {
           scenesToProcess = scenesToProcess.filter(s =>
@@ -668,32 +1004,43 @@ export const usePipelineStore = create(
           scenesToProcess, settings.videoProvider, settings.videoResolution, settings.aspectRatio, settings.videoModel
         )
 
-        const newVideoJobs = { ...videoJobs }
+        // Use functional updater so we merge into the *current* videoJobs, not a
+        // stale snapshot captured before the async API call
+        const newEntries = {}
         jobs.forEach(job => {
-          newVideoJobs[job.scene_number] = {
-            jobId: job.job_id,
-            status: job.status,
-            url: null,
-            error: null,
-            provider: settings.videoProvider
+          if (job.job_id) {  // skip failed sentinels (no job_id)
+            newEntries[job.scene_number] = {
+              jobId: job.job_id,
+              status: job.status,
+              url: null,
+              error: job.error || null,
+              provider: settings.videoProvider,
+              falEndpoint: job.fal_endpoint || null,
+            }
           }
         })
 
         if (!resumeFromPending) {
-          const allSceneNumbers = videoPrompts.map(vp => String(vp.scene_number))
-          const alreadyCompleted = Object.keys(videoJobs).filter(k => videoJobs[k]?.status === 'completed')
-          set({
-            videoJobs: newVideoJobs,
-            generationState: 'running',
-            generationPhase: 'videos',
-            videoProgress: {
-              total: videoPrompts.length,
-              completed: alreadyCompleted,
-              pending: allSceneNumbers.filter(n => !alreadyCompleted.includes(n))
+          set(state => {
+            const allSceneNumbers = videoPrompts.map(vp => String(vp.scene_number))
+            const alreadyCompleted = Object.keys(state.videoJobs).filter(k => state.videoJobs[k]?.status === 'completed')
+            return {
+              videoJobs: { ...state.videoJobs, ...newEntries },
+              generationState: 'running',
+              generationPhase: 'videos',
+              videoProgress: {
+                total: videoPrompts.length,
+                completed: alreadyCompleted,
+                pending: allSceneNumbers.filter(n => !alreadyCompleted.includes(n))
+              }
             }
           })
         } else {
-          set({ videoJobs: newVideoJobs, generationState: 'running', generationPhase: 'videos' })
+          set(state => ({
+            videoJobs: { ...state.videoJobs, ...newEntries },
+            generationState: 'running',
+            generationPhase: 'videos'
+          }))
         }
 
         return jobs
@@ -718,7 +1065,7 @@ export const usePipelineStore = create(
         if (!job?.jobId) return null
 
         try {
-          const result = await api.getVideoStatus(job.jobId, job.provider || 'fal')
+          const result = await api.getVideoStatus(job.jobId, job.provider || 'fal', job.falEndpoint)
 
           set((state) => ({
             videoJobs: {
@@ -735,9 +1082,10 @@ export const usePipelineStore = create(
           if (result.status === 'completed' || result.status === 'failed') {
             set(state => {
               const sceneStr = String(sceneNumber)
-              const newCompleted = result.status === 'completed'
-                ? [...new Set([...state.videoProgress.completed, sceneStr])]
-                : state.videoProgress.completed
+              // Track both completed AND failed in the completed set so that
+              // progress.completed.length + progress.pending.length === progress.total
+              // is always true and the progress bar reaches 100% even with failures.
+              const newCompleted = [...new Set([...state.videoProgress.completed, sceneStr])]
               const newPending = state.videoProgress.pending.filter(p => p !== sceneStr)
               return {
                 videoProgress: {
@@ -830,7 +1178,8 @@ export const usePipelineStore = create(
                 status: 'pending',
                 url: null,
                 error: null,
-                provider: settings.videoProvider
+                provider: settings.videoProvider,
+                falEndpoint: result.fal_endpoint || null,
               }
             },
             // Ensure polling useEffect fires
@@ -1093,7 +1442,20 @@ export const usePipelineStore = create(
           scenePlanError: null,
           ttsError: null,
           metadataError: null,
-          settings: { ...get().settings, ...project.settings }
+          settings: {
+            ...get().settings,
+            // exportProject() serialises settings in snake_case; map back to camelCase
+            ...(project.settings ? {
+              ...(project.settings.image_provider   ? { imageProvider:   project.settings.image_provider   } : {}),
+              ...(project.settings.image_model      ? { imageModel:      project.settings.image_model      } : {}),
+              ...(project.settings.claude_provider  ? { claudeProvider:  project.settings.claude_provider  } : {}),
+              ...(project.settings.claude_model     ? { claudeModel:     project.settings.claude_model     } : {}),
+              ...(project.settings.video_provider   ? { videoProvider:   project.settings.video_provider   } : {}),
+              ...(project.settings.video_model      ? { videoModel:      project.settings.video_model      } : {}),
+              ...(project.settings.video_resolution ? { videoResolution: project.settings.video_resolution } : {}),
+              ...(project.settings.aspect_ratio     ? { aspectRatio:     project.settings.aspect_ratio     } : {}),
+            } : {})
+          }
         })
       },
 
@@ -1158,6 +1520,7 @@ export const usePipelineStore = create(
           imagesError: null,
           videoPrompts: [],
           videoPromptsError: null,
+          videoBatches: [],
           videoJobs: {},
           selectedVideos: {},
           ttsScript: null,
@@ -1203,6 +1566,8 @@ export const usePipelineStore = create(
         thumbnailPrompts: state.thumbnailPrompts,
         imageProgress: state.imageProgress,
         videoProgress: state.videoProgress,
+        imageBatches: state.imageBatches,
+        videoBatches: state.videoBatches,
         customPrompts: state.customPrompts,
         includeThumbnail: state.includeThumbnail,
         includeMetadata: state.includeMetadata,

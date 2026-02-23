@@ -6,24 +6,39 @@ import ImageCard from '../components/ImageCard'
 import ImageModal from '../components/ImageModal'
 import toast from 'react-hot-toast'
 
+// Derive human-readable duration range from the selected video model
+const getDurationHint = (videoModel) => {
+  if (videoModel === 'lightricks/ltx-2-fast')        return '6–20s (even steps)'
+  if (videoModel === 'kwaivgi/kling-v3-video')        return '3–15s'
+  if (videoModel === 'kwaivgi/kling-v2.5-turbo-pro') return '5s or 10s'
+  return '6s / 8s / 10s'  // LTX-2 Pro default
+}
+
 // Animated terminal that streams the scene plan JSON as it arrives
-function LivePlanningTerminal({ scenePlan, phase }) {
+function LivePlanningTerminal({ scenePlan, phase, settings = {}, imageBatches = [], onRetryBatch }) {
   const [displayedLines, setDisplayedLines] = useState([])
   const [cursor, setCursor] = useState(true)
   const termRef = useRef(null)
+
+  const imageModelLabel = settings.imageModel?.split('/').pop() || 'flux-pro'
+  const videoModelLabel = settings.videoModel?.split('/').pop() || 'ltx-2-pro'
+  const aspect = settings.aspectRatio || '16:9'
+  const durationHint = getDurationHint(settings.videoModel)
 
   const phaseLines = {
     scenePlan: [
       '> Analyzing narrative structure...',
       '> Calculating optimal scene count...',
       '> Applying SMART pacing algorithm...',
-      '> Assigning durations (6s / 8s / 10s)...',
+      `> Assigning durations (${durationHint})...`,
+      `> Video model: ${videoModelLabel}  |  Aspect ratio: ${aspect}`,
       '> Writing visual descriptions...',
       '> Configuring mannequin details...',
       '> Building environment specs...',
     ],
     images: [
       '> Scene plan complete ✓',
+      `> Image model: ${imageModelLabel}  |  Aspect ratio: ${aspect}`,
       '> Generating image prompt variations...',
       '> Applying cinematography vocabulary...',
       '> Mapping continuity requirements...',
@@ -39,9 +54,7 @@ function LivePlanningTerminal({ scenePlan, phase }) {
     const interval = setInterval(() => {
       if (lines && i < lines.length) {
         const nextLine = lines[i]
-        if (nextLine) {
-          setDisplayedLines(prev => [...prev, nextLine])
-        }
+        if (nextLine) setDisplayedLines(prev => [...prev, nextLine])
         i++
       } else {
         clearInterval(interval)
@@ -59,15 +72,20 @@ function LivePlanningTerminal({ scenePlan, phase }) {
   // Show scene plan JSON lines once available
   const jsonLines = scenePlan ? JSON.stringify(scenePlan, null, 2).split('\n').slice(0, 22) : []
 
-  // Only scroll when content actually changes (not on every render)
+  // Only scroll when content count changes — not on cursor blink
   const prevLineCount = useRef(0)
   useEffect(() => {
-    const currentCount = displayedLines.length + jsonLines.length
+    const currentCount = displayedLines.length + jsonLines.length + imageBatches.length
     if (currentCount !== prevLineCount.current && termRef.current) {
       termRef.current.scrollTop = termRef.current.scrollHeight
       prevLineCount.current = currentCount
     }
-  }, [displayedLines.length, jsonLines.length])
+  }, [displayedLines.length, jsonLines.length, imageBatches.length])
+
+  const batchStatusIcon = (status) =>
+    status === 'done' ? '✓' : status === 'failed' ? '✗' : status === 'running' ? '▶' : '○'
+  const batchStatusColor = (status) =>
+    status === 'done' ? 'text-green-400' : status === 'failed' ? 'text-red-400' : status === 'running' ? 'text-yellow-300' : 'text-slate-500'
 
   return (
     <div className="w-full max-w-2xl mx-auto">
@@ -80,6 +98,9 @@ function LivePlanningTerminal({ scenePlan, phase }) {
             <div className="w-3 h-3 rounded-full bg-success/70" />
           </div>
           <span className="text-xs text-text-disabled font-mono ml-2">pipeline — scene-planner</span>
+          {phase === 'images' && (
+            <span className="ml-auto text-xs text-text-disabled font-mono">{imageModelLabel} · {aspect}</span>
+          )}
         </div>
 
         {/* Terminal body */}
@@ -100,11 +121,7 @@ function LivePlanningTerminal({ scenePlan, phase }) {
           ))}
 
           {jsonLines.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="mt-2"
-            >
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-2">
               <div className="text-blue-400 mb-1">&gt; Scene plan received:</div>
               {jsonLines.filter(Boolean).map((line, i) => (
                 <motion.div
@@ -121,25 +138,47 @@ function LivePlanningTerminal({ scenePlan, phase }) {
                     : line}
                 </motion.div>
               ))}
-              {jsonLines.length === 22 && (
-                <div className="text-slate-500">  ...</div>
-              )}
+              {jsonLines.length === 22 && <div className="text-slate-500">  ...</div>}
             </motion.div>
           )}
 
-          <span className="text-emerald-400">
-            {cursor ? '█' : ' '}
-          </span>
+          {/* Batch progress */}
+          {imageBatches.length > 0 && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-2">
+              <div className="text-blue-400 mb-1">&gt; Generating image prompts in batches:</div>
+              {imageBatches.map(b => (
+                <div key={b.batchIndex} className="flex items-center gap-2">
+                  <span className={batchStatusColor(b.status)}>
+                    {batchStatusIcon(b.status)} Batch {b.batchIndex + 1}/{imageBatches.length} — scenes {b.sceneNumbers[0]}–{b.sceneNumbers[b.sceneNumbers.length - 1]}
+                  </span>
+                  {b.status === 'failed' && onRetryBatch && (
+                    <button
+                      onClick={() => onRetryBatch(b.batchIndex)}
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-error/20 text-red-400 hover:bg-error/40 transition-colors"
+                    >
+                      retry
+                    </button>
+                  )}
+                </div>
+              ))}
+            </motion.div>
+          )}
+
+          <span className="text-emerald-400">{cursor ? '█' : ' '}</span>
         </div>
       </div>
     </div>
   )
 }
 
+const SCENES_PER_PAGE = 80
+
 function SceneImages() {
   const navigate = useNavigate()
   const [selectedModal, setSelectedModal] = useState(null)
   const [regeneratingAll, setRegeneratingAll] = useState(false)
+  const [currentPage, setCurrentPage] = useState(0)
+  const allImagesCompleteToastedRef = useRef(false)
 
   const {
     selectedStory,
@@ -154,11 +193,14 @@ function SceneImages() {
     generationState,
     generationPhase,
     imageProgress,
+    imageBatches,
+    settings,
     selectImage,
     regenerateImage,
     resumeImageGeneration,
     retryScenePlan,
     retryImagePrompts,
+    retryImageBatch,
     fetchScenePlan,
     regenerateAllImages,
   } = usePipelineStore()
@@ -168,8 +210,14 @@ function SceneImages() {
   const allSelected = completedCount === totalSceneCount && totalSceneCount > 0
 
   const imagesCompleteCount = Object.values(images).filter(img => img?.url && !img?.error).length
-  const imagesTotalCount = scenes.length * 4
+  const imagesTotalCount = scenes.reduce((sum, s) => sum + (s.prompts?.length ?? 0), 0)
   const allImagesComplete = imagesTotalCount > 0 && imagesCompleteCount === imagesTotalCount
+
+  // Redirect to home if no story selected — must be in useEffect, not render body,
+  // to avoid calling navigate() during React 18 concurrent render
+  useEffect(() => {
+    if (!selectedStory) navigate('/')
+  }, [selectedStory, navigate])
 
   // Toast on error states
   useEffect(() => {
@@ -184,12 +232,30 @@ function SceneImages() {
     }
   }, [imagesError])
 
-  // Toast when all images complete
+  // Toast when all images complete — only on the false→true transition,
+  // not on every remount (ref survives re-renders but resets on unmount/mount)
   useEffect(() => {
-    if (allImagesComplete) {
+    if (allImagesComplete && !allImagesCompleteToastedRef.current) {
+      allImagesCompleteToastedRef.current = true
       toast.success('All images generated!', { id: 'images-done' })
     }
+    if (!allImagesComplete) {
+      allImagesCompleteToastedRef.current = false
+    }
   }, [allImagesComplete])
+
+  // Pagination — only active when scenes exceed threshold
+  const totalPages = Math.ceil(scenes.length / SCENES_PER_PAGE)
+  const isPaginated = scenes.length > 80
+  const visibleScenes = isPaginated
+    ? scenes.slice(currentPage * SCENES_PER_PAGE, (currentPage + 1) * SCENES_PER_PAGE)
+    : scenes
+
+  // Reset to page 0 when a new generation run starts (first scene number changes)
+  const firstSceneNumber = scenes[0]?.scene_number ?? 0
+  useEffect(() => {
+    setCurrentPage(0)
+  }, [firstSceneNumber])
 
   const pageVariants = {
     initial: { opacity: 0, y: 8 },
@@ -197,13 +263,17 @@ function SceneImages() {
     exit: { opacity: 0, y: -8 }
   }
 
-  if (!selectedStory) {
-    navigate('/')
-    return null
-  }
+  // Guard: while selectedStory is null the useEffect above will redirect;
+  // render nothing in the meantime to avoid downstream crashes
+  if (!selectedStory) return null
 
   // ── Scene planning loading screen ──────────────────────────────────────────
-  if (scenePlanLoading || (scenes.length === 0 && !scenePlanError && !imagesError && generationState !== 'idle' && generationState !== 'stopped')) {
+  // Don't show loading screen when paused — the main grid has the Resume button.
+  // Also escape if all image batches finished (done/failed) but scenes is still empty
+  // (every batch failed silently without setting imagesError) — prevents infinite lock.
+  const allBatchesSettled = imageBatches.length > 0 &&
+    imageBatches.every(b => b.status === 'done' || b.status === 'failed')
+  if (scenePlanLoading || (!allBatchesSettled && scenes.length === 0 && !scenePlanError && !imagesError && generationState !== 'idle' && generationState !== 'stopped' && generationState !== 'paused')) {
     return (
       <motion.div
         variants={pageVariants} initial="initial" animate="animate" exit="exit"
@@ -221,6 +291,15 @@ function SceneImages() {
         <LivePlanningTerminal
           scenePlan={scenePlan}
           phase={generationPhase === 'images' ? 'images' : 'scenePlan'}
+          settings={settings}
+          imageBatches={imageBatches || []}
+          onRetryBatch={async (batchIndex) => {
+            try {
+              await retryImageBatch(batchIndex)
+            } catch (err) {
+              toast.error(`Batch retry failed: ${err.message}`, { duration: 5000 })
+            }
+          }}
         />
 
         <div className="text-center space-y-1">
@@ -352,7 +431,41 @@ function SceneImages() {
 
       {/* Scene grid */}
       <div className="max-w-6xl mx-auto p-8 space-y-10">
-        {scenes.map((scene) => {
+
+        {/* Pagination tabs — only shown when > 80 scenes (50 images × 4 variations each) */}
+        {isPaginated && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-text-disabled mr-1">Page:</span>
+            {Array.from({ length: totalPages }, (_, i) => {
+              const startScene = i * SCENES_PER_PAGE + 1
+              const endScene = Math.min((i + 1) * SCENES_PER_PAGE, scenes.length)
+              const pageSelectedCount = scenes
+                .slice(i * SCENES_PER_PAGE, (i + 1) * SCENES_PER_PAGE)
+                .filter(s => selectedImages[s.scene_number]).length
+              const pageTotal = endScene - startScene + 1
+              return (
+                <button
+                  key={i}
+                  onClick={() => setCurrentPage(i)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    currentPage === i
+                      ? 'bg-accent text-white'
+                      : 'bg-surface-raised border border-border text-text-secondary hover:border-accent/50 hover:text-text-primary'
+                  }`}
+                >
+                  <span>Scenes {startScene}–{endScene}</span>
+                  {pageSelectedCount > 0 && (
+                    <span className={`text-[10px] px-1 rounded ${currentPage === i ? 'bg-white/20' : 'bg-accent/15 text-accent'}`}>
+                      {pageSelectedCount}/{pageTotal}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {visibleScenes.map((scene) => {
           const planScene = scenePlan?.scenes?.find(s => s.scene_number === scene.scene_number)
           return (
             <div key={scene.scene_number}>
@@ -413,6 +526,35 @@ function SceneImages() {
             </div>
           )
         })}
+
+        {/* Pagination prev/next footer */}
+        {isPaginated && totalPages > 1 && (
+          <div className="flex items-center justify-between pt-4 border-t border-border">
+            <button
+              onClick={() => { setCurrentPage(p => Math.max(0, p - 1)); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+              disabled={currentPage === 0}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+              Previous
+            </button>
+            <span className="text-xs text-text-disabled">
+              Page {currentPage + 1} of {totalPages} · {scenes.length} scenes total
+            </span>
+            <button
+              onClick={() => { setCurrentPage(p => Math.min(totalPages - 1, p + 1)); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+              disabled={currentPage === totalPages - 1}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              Next
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Bottom bar */}

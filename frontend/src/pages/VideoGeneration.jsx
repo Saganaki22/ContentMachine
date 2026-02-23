@@ -8,13 +8,18 @@ import toast from 'react-hot-toast'
 import api from '../services/api'
 
 // Animated terminal for video prompt generation phase
-function VideoPromptTerminal({ videoPrompts }) {
+function VideoPromptTerminal({ videoPrompts, settings = {}, videoBatches = [], onRetryBatch }) {
   const [lines, setLines] = useState([])
   const [cursor, setCursor] = useState(true)
   const termRef = useRef(null)
 
+  const modelLabel = settings.videoModel?.split('/').pop() || 'ltx-2-pro'
+  const aspect = settings.aspectRatio || '16:9'
+  const resolution = settings.videoResolution || '1080p'
+
   const bootLines = [
     '> Analyzing selected images...',
+    `> Model: ${modelLabel}  |  Aspect: ${aspect}  |  Resolution: ${resolution}`,
     '> Reading scene plan durations...',
     '> Matching camera movements to durations...',
     '> Writing motion descriptors...',
@@ -23,6 +28,9 @@ function VideoPromptTerminal({ videoPrompts }) {
     '> Validating audio sync points...',
   ]
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Intentional: bootLines is captured at mount time so the animation plays once
+  // with the initial settings. Re-running on settings changes would restart mid-animation.
   useEffect(() => {
     setLines([])
     let i = 0
@@ -35,16 +43,21 @@ function VideoPromptTerminal({ videoPrompts }) {
       }
     }, 700)
     return () => clearInterval(interval)
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const t = setInterval(() => setCursor(c => !c), 530)
     return () => clearInterval(t)
   }, [])
 
+  const prevContentCount = useRef(0)
   useEffect(() => {
-    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
-  }, [lines, videoPrompts])
+    const count = lines.length + videoPrompts.length
+    if (count !== prevContentCount.current && termRef.current) {
+      termRef.current.scrollTop = termRef.current.scrollHeight
+      prevContentCount.current = count
+    }
+  }, [lines.length, videoPrompts.length])
 
   const promptPreviewLines = videoPrompts.length > 0
     ? videoPrompts.slice(0, 4).flatMap(vp => [
@@ -65,6 +78,7 @@ function VideoPromptTerminal({ videoPrompts }) {
             <div className="w-3 h-3 rounded-full bg-success/70" />
           </div>
           <span className="text-xs text-text-disabled font-mono ml-2">pipeline — video-prompt-writer</span>
+          <span className="ml-auto text-xs text-text-disabled font-mono">{modelLabel} · {aspect} · {resolution}</span>
         </div>
         <div ref={termRef} className="bg-[#0d1117] p-4 h-64 overflow-y-auto font-mono text-xs leading-relaxed">
           {lines.map((line, i) => {
@@ -78,6 +92,31 @@ function VideoPromptTerminal({ videoPrompts }) {
               </motion.div>
             )
           })}
+          {/* Batch progress */}
+          {videoBatches.length > 0 && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-2">
+              <div className="text-blue-400 mb-1">&gt; Generating video prompts in batches:</div>
+              {videoBatches.map(b => {
+                const icon = b.status === 'done' ? '✓' : b.status === 'failed' ? '✗' : b.status === 'running' ? '▶' : '○'
+                const colour = b.status === 'done' ? 'text-green-400' : b.status === 'failed' ? 'text-red-400' : b.status === 'running' ? 'text-yellow-300' : 'text-slate-500'
+                return (
+                  <div key={b.batchIndex} className="flex items-center gap-2">
+                    <span className={colour}>
+                      {icon} Batch {b.batchIndex + 1}/{videoBatches.length} — scenes {b.sceneNumbers[0]}–{b.sceneNumbers[b.sceneNumbers.length - 1]}
+                    </span>
+                    {b.status === 'failed' && onRetryBatch && (
+                      <button
+                        onClick={() => onRetryBatch(b.batchIndex)}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-error/20 text-red-400 hover:bg-error/40 transition-colors"
+                      >
+                        retry
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+            </motion.div>
+          )}
           {promptPreviewLines.length > 0 && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-2">
               <div className="text-blue-400 mb-1">&gt; Video prompts ready:</div>
@@ -103,10 +142,13 @@ function VideoPromptTerminal({ videoPrompts }) {
   )
 }
 
+const VIDEO_SCENES_PER_PAGE = 80
+
 function VideoGeneration() {
   const navigate = useNavigate()
   const [selectedModal, setSelectedModal] = useState(null)
   const [showExportModal, setShowExportModal] = useState(false)
+  const [currentPage, setCurrentPage] = useState(0)
   const initializedRef = useRef(false)
   const pollingActiveRef = useRef(false)   // true while the poll loop is running
   const pollingTimerRef = useRef(null)     // the current setTimeout handle
@@ -118,6 +160,7 @@ function VideoGeneration() {
     videoPrompts,
     videoPromptsLoading,
     videoPromptsError,
+    videoBatches,
     videoJobs,
     selectedVideos,
     ttsScript,
@@ -126,6 +169,7 @@ function VideoGeneration() {
     generationState,
     generationPhase,
     videoProgress,
+    settings,
     fetchVideoPrompts,
     startVideoGeneration,
     pollVideoStatus,
@@ -134,6 +178,7 @@ function VideoGeneration() {
     regenerateVideo,
     fetchTtsScript,
     retryVideoPrompts,
+    retryVideoBatch,
     retryTtsScript,
     exportProject,
     clearProject,
@@ -149,6 +194,17 @@ function VideoGeneration() {
   const allSelected    = selectedCount === totalCount && totalCount > 0
   const progress       = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
   const allJobsDone    = totalCount > 0 && (completedCount + failedCount) === totalCount
+
+  // Pagination — only active when videoPrompts exceed threshold
+  const totalPages     = Math.ceil(videoPrompts.length / VIDEO_SCENES_PER_PAGE)
+  const isPaginated    = videoPrompts.length > 80
+  const visiblePrompts = isPaginated
+    ? videoPrompts.slice(currentPage * VIDEO_SCENES_PER_PAGE, (currentPage + 1) * VIDEO_SCENES_PER_PAGE)
+    : videoPrompts
+
+  // Reset to page 0 when a new generation run loads a fresh prompt list
+  const firstPromptScene = videoPrompts[0]?.scene_number ?? 0
+  useEffect(() => { setCurrentPage(0) }, [firstPromptScene])
 
   // Toast errors
   useEffect(() => {
@@ -170,27 +226,30 @@ function VideoGeneration() {
 
     const init = async () => {
       try {
-        if (videoPrompts.length === 0 && !videoPromptsLoading) {
+        // Read videoPromptsLoading from store directly — the closure value captured
+        // by this useEffect may be stale if the component re-rendered before the
+        // effect ran (React 18 concurrent mode batches renders)
+        if (videoPrompts.length === 0 && !usePipelineStore.getState().videoPromptsLoading) {
           const prompts = await fetchVideoPrompts()
           if (prompts?.length) {
             await startVideoGeneration(prompts)
-            fetchTtsScript().catch(() => {})
+            if (!ttsScript) fetchTtsScript().catch(() => {})
           }
         } else if (videoPrompts.length > 0 && Object.keys(videoJobs).length === 0) {
           // If videos are already selected (loaded from project file), don't regenerate
-          if (Object.keys(selectedVideos).length > 0) {
-            fetchTtsScript().catch(() => {})
+          if (Object.keys(selectedVideos).length > 0 || completedCount > 0) {
+            if (!ttsScript) fetchTtsScript().catch(() => {})
             return
           }
           await startVideoGeneration(videoPrompts)
-          fetchTtsScript().catch(() => {})
+          if (!ttsScript) fetchTtsScript().catch(() => {})
         } else if (videoPrompts.length > 0 && Object.keys(videoJobs).length > 0) {
           // Jobs exist from a previous run — resume polling for any still-pending jobs
           const hasPending = Object.values(videoJobs).some(j => j.status === 'pending')
           if (hasPending) {
             resumeVideoPolling()
           }
-          fetchTtsScript().catch(() => {})
+          if (!ttsScript) fetchTtsScript().catch(() => {})
         }
       } catch (error) {
         toast.error(`Failed to start video generation: ${error.message}`)
@@ -224,14 +283,24 @@ function VideoGeneration() {
         return
       }
 
-      await Promise.all(pending.map(async ([sceneNum]) => {
-        const result = await usePipelineStore.getState().pollVideoStatus(parseInt(sceneNum))
-        if (result?.status === 'completed') {
-          toast.success(`Scene ${sceneNum} ready`, { id: `scene-${sceneNum}`, duration: 3000 })
-        } else if (result?.status === 'failed') {
-          toast.error(`Scene ${sceneNum} failed`, { id: `scene-${sceneNum}-err`, duration: 4000 })
+      // Poll in chunks of 20 — enough concurrency for fast throughput without
+      // triggering rate limits at 45+ scenes (status endpoint is lightweight)
+      const POLL_CHUNK_SIZE = 20
+      for (let ci = 0; ci < pending.length; ci += POLL_CHUNK_SIZE) {
+        const chunk = pending.slice(ci, ci + POLL_CHUNK_SIZE)
+        await Promise.all(chunk.map(async ([sceneNum]) => {
+          const result = await usePipelineStore.getState().pollVideoStatus(parseInt(sceneNum))
+          if (result?.status === 'completed') {
+            toast.success(`Scene ${sceneNum} ready`, { id: `scene-${sceneNum}`, duration: 3000 })
+          } else if (result?.status === 'failed') {
+            toast.error(`Scene ${sceneNum} failed`, { id: `scene-${sceneNum}-err`, duration: 4000 })
+          }
+        }))
+        // 200ms gap between chunks to spread out API calls
+        if (ci + POLL_CHUNK_SIZE < pending.length) {
+          await new Promise(r => setTimeout(r, 200))
         }
-      }))
+      }
 
       // Check again after polling — if nothing left, stop
       const stillPending = Object.values(usePipelineStore.getState().videoJobs)
@@ -285,7 +354,7 @@ function VideoGeneration() {
       stopPollLoop()
       clearProject()
       resetGeneration()
-      initializedRef.current = false
+      initializedRef.current = false  // component will unmount via navigate; reset in case it ever remounts
       navigate('/')
       toast.success('Project cleared')
     }
@@ -311,7 +380,9 @@ function VideoGeneration() {
   }
 
   // ── Loading state: generating prompts ──────────────────────────────────────
-  if (videoPromptsLoading || (videoPrompts.length === 0 && !videoPromptsError)) {
+  // Only show the loading terminal while actively fetching. Once fetching stops,
+  // fall through to the error screen (empty result) or the main grid (has results).
+  if (videoPromptsLoading || (videoPrompts.length === 0 && !videoPromptsError && generationPhase === 'videoPrompts')) {
     return (
       <motion.div
         variants={pageVariants} initial="initial" animate="animate" exit="exit"
@@ -325,8 +396,46 @@ function VideoGeneration() {
           </div>
           <p className="text-sm text-text-secondary">{selectedStory?.title}</p>
         </div>
-        <VideoPromptTerminal videoPrompts={videoPrompts} />
+        <VideoPromptTerminal
+          videoPrompts={videoPrompts}
+          settings={settings}
+          videoBatches={videoBatches || []}
+          onRetryBatch={async (batchIndex) => {
+            try {
+              await retryVideoBatch(batchIndex)
+            } catch (err) {
+              toast.error(`Batch retry failed: ${err.message}`, { duration: 5000 })
+            }
+          }}
+        />
         <p className="text-xs text-text-disabled">Crafting motion instructions for each scene...</p>
+      </motion.div>
+    )
+  }
+
+  // ── Error: prompts returned empty (no error thrown, but zero scenes) ─────────
+  // Treat an empty result the same as a failure — show error + retry button
+  if (!videoPromptsLoading && videoPrompts.length === 0 && !videoPromptsError && generationPhase !== 'videoPrompts') {
+    return (
+      <motion.div
+        variants={pageVariants} initial="initial" animate="animate" exit="exit"
+        className="min-h-[calc(100vh-3.5rem)] flex items-center justify-center p-8"
+      >
+        <div className="text-center max-w-md">
+          <div className="w-12 h-12 rounded-full bg-warning/10 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-warning" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h2 className="text-lg font-semibold text-text-primary mb-2">No Video Prompts Yet</h2>
+          <p className="text-sm text-text-secondary mb-6">
+            No video prompts have been generated. If you just loaded a project, go back to Images and proceed from there. Otherwise the AI may have returned an empty response — retrying usually succeeds.
+          </p>
+          <div className="flex gap-3 justify-center">
+            <button onClick={retryVideoPrompts} className="btn-primary px-6 py-2">Retry</button>
+            <button onClick={() => navigate('/images')} className="btn-ghost px-6 py-2">Back to Images</button>
+          </div>
+        </div>
       </motion.div>
     )
   }
@@ -405,9 +514,42 @@ function VideoGeneration() {
       </div>
 
       <div className="max-w-6xl mx-auto p-8 space-y-8">
+        {/* Pagination tabs — only shown when > 80 scenes */}
+        {isPaginated && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-text-disabled mr-1">Page:</span>
+            {Array.from({ length: totalPages }, (_, i) => {
+              const startScene = i * VIDEO_SCENES_PER_PAGE + 1
+              const endScene   = Math.min((i + 1) * VIDEO_SCENES_PER_PAGE, videoPrompts.length)
+              const pageCompleted = videoPrompts
+                .slice(i * VIDEO_SCENES_PER_PAGE, (i + 1) * VIDEO_SCENES_PER_PAGE)
+                .filter(vp => videoJobs[vp.scene_number]?.status === 'completed').length
+              const pageTotal = endScene - startScene + 1
+              return (
+                <button
+                  key={i}
+                  onClick={() => setCurrentPage(i)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    currentPage === i
+                      ? 'bg-accent text-white'
+                      : 'bg-surface-raised border border-border text-text-secondary hover:border-accent/50 hover:text-text-primary'
+                  }`}
+                >
+                  <span>Scenes {startScene}–{endScene}</span>
+                  {pageCompleted > 0 && (
+                    <span className={`text-[10px] px-1 rounded ${currentPage === i ? 'bg-white/20' : 'bg-success/15 text-success'}`}>
+                      {pageCompleted}/{pageTotal}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         {/* Video cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {videoPrompts.map((vp) => (
+          {visiblePrompts.map((vp) => (
             <VideoCard
               key={vp.scene_number}
               sceneNumber={vp.scene_number}
@@ -425,6 +567,35 @@ function VideoGeneration() {
             />
           ))}
         </div>
+
+        {/* Pagination prev/next footer */}
+        {isPaginated && totalPages > 1 && (
+          <div className="flex items-center justify-between pt-4 border-t border-border">
+            <button
+              onClick={() => { setCurrentPage(p => Math.max(0, p - 1)); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+              disabled={currentPage === 0}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+              Previous
+            </button>
+            <span className="text-xs text-text-disabled">
+              Page {currentPage + 1} of {totalPages} · {videoPrompts.length} scenes total
+            </span>
+            <button
+              onClick={() => { setCurrentPage(p => Math.min(totalPages - 1, p + 1)); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+              disabled={currentPage === totalPages - 1}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              Next
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
+        )}
 
         {/* Narration Script panel */}
         <div className="bg-surface border border-border rounded-xl p-5">
@@ -544,6 +715,7 @@ function VideoGeneration() {
 function ExportModal({ onClose, exportProject, clearProject }) {
   const [exporting, setExporting] = useState(false)
   const { selectedVideos } = usePipelineStore()
+  const navigate = useNavigate()
 
   const handleExport = async () => {
     setExporting(true)
@@ -561,7 +733,7 @@ function ExportModal({ onClose, exportProject, clearProject }) {
   const handleNewProject = () => {
     clearProject()
     onClose()
-    window.location.href = '/'
+    navigate('/')
   }
 
   return (

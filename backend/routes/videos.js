@@ -3,24 +3,65 @@ import * as fal from '@fal-ai/client';
 import Replicate from 'replicate';
 const router = express.Router();
 
-const FAST_DURATIONS        = [6, 8, 10, 12, 14, 16, 18, 20];
 const PRO_DURATIONS         = [6, 8, 10];
 const KLING_TURBO_DURATIONS = [5, 10];
 
 // Kling v3 accepts any integer 3-15
 const clampKling = (d) => Math.min(15, Math.max(3, Math.round(d || 5)));
 // Kling 2.5 Turbo Pro accepts only 5 or 10
-const clampKlingTurbo = (d) => (Math.round(d || 5) <= 7 ? 5 : 10);
+// Split at 7.5: d < 7.5 → 5, d >= 7.5 → 10 (correct nearest-neighbour)
+const clampKlingTurbo = (d) => ((d || 5) < 7.5 ? 5 : 10);
+// LTX-2 Fast accepts any even integer 6-20 (2s steps)
+const clampFast = (d) => {
+  const clamped = Math.min(20, Math.max(6, Math.round((d || 6) / 2) * 2));
+  return clamped;
+};
 
 const clampDuration = (d, videoModel) => {
-  if (videoModel === 'kwaivgi/kling-v3-video')      return clampKling(d);
+  if (videoModel === 'kwaivgi/kling-v3-video')       return clampKling(d);
   if (videoModel === 'kwaivgi/kling-v2.5-turbo-pro') return clampKlingTurbo(d);
+  if (videoModel === 'lightricks/ltx-2-fast')        return clampFast(d);
+  // LTX-2 Pro
   const raw = d || 6;
-  const allowed = videoModel === 'lightricks/ltx-2-fast' ? FAST_DURATIONS : PRO_DURATIONS;
-  if (allowed.includes(raw)) return raw;
-  return allowed.reduce((prev, curr) =>
+  if (PRO_DURATIONS.includes(raw)) return raw;
+  return PRO_DURATIONS.reduce((prev, curr) =>
     Math.abs(curr - raw) < Math.abs(prev - raw) ? curr : prev
   );
+};
+
+// Build model-specific fal.ai input
+const buildFalInput = (videoModel, scene, duration, resolution, aspectRatio) => {
+  if (videoModel === 'kwaivgi/kling-v3-video') {
+    const input = {
+      prompt: scene.video_prompt,
+      duration,
+      mode: resolution === '720p' ? 'standard' : 'pro',
+      aspect_ratio: aspectRatio,
+      generate_audio: true,
+    };
+    if (scene.image_url) input.start_image = scene.image_url;
+    return input;
+  }
+  if (videoModel === 'kwaivgi/kling-v2.5-turbo-pro') {
+    const input = {
+      prompt: scene.video_prompt,
+      duration,
+      aspect_ratio: aspectRatio,
+      generate_audio: true,
+    };
+    if (scene.image_url) input.start_image = scene.image_url;
+    return input;
+  }
+  // LTX-2 Pro / Fast
+  const input = {
+    prompt: scene.video_prompt,
+    duration,
+    resolution,
+    aspect_ratio: aspectRatio,
+    generate_audio: true,
+  };
+  if (scene.image_url) input.image_url = scene.image_url;
+  return input;
 };
 
 // Build model-specific Replicate input
@@ -41,6 +82,7 @@ const buildReplicateInput = (videoModel, scene, duration, resolution, aspectRati
       prompt: scene.video_prompt,
       duration,
       aspect_ratio: aspectRatio,
+      generate_audio: true,
     };
     if (scene.image_url) input.start_image = scene.image_url;
     return input;
@@ -74,21 +116,46 @@ const getReplicateClient = (req) => {
   return new Replicate({ auth: keys.replicate });
 };
 
-// Helper to process in batches of 2
+// Helper to process in batches of N, with per-item error isolation.
+// A failed item returns { scene_number, error } instead of throwing, so one bad
+// scene never prevents the rest of the batch from being submitted.
 const processInBatches = async (items, batchSize, processor) => {
   const results = [];
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
-    const batchResults = await Promise.all(batch.map(processor));
+    const batchResults = await Promise.all(
+      batch.map(async (item) => {
+        try {
+          return await processor(item);
+        } catch (err) {
+          console.error(`processInBatches: scene ${item.scene_number} failed:`, err.message);
+          // Return a shape compatible with the frontend jobs array; no job_id means
+          // startVideoGeneration will skip this entry (job_id guard in newEntries loop)
+          return { scene_number: item.scene_number, job_id: null, status: 'failed', error: err.message };
+        }
+      })
+    );
     results.push(...batchResults);
   }
   return results;
 };
 
+// Map fal model IDs to their fal.ai endpoint paths
+const FAL_ENDPOINT = {
+  'lightricks/ltx-2-fast': 'fal-ai/ltx-2-fast/image-to-video',
+  'lightricks/ltx-2-pro':  'fal-ai/ltx-2/image-to-video',
+};
+const getFalEndpoint = (videoModel) =>
+  FAL_ENDPOINT[videoModel] || 'fal-ai/ltx-2/image-to-video';
+
 router.post('/generate', async (req, res) => {
   try {
     const { scenes, provider = 'fal', resolution = '1080p', aspectRatio = '16:9', videoModel = 'lightricks/ltx-2-pro' } = req.body;
-    
+
+    if (!Array.isArray(scenes) || scenes.length === 0) {
+      return res.status(400).json({ error: true, message: 'scenes array is required and must be non-empty', code: 'MISSING_SCENES' });
+    }
+
     if (provider === 'replicate') {
       const replicate = getReplicateClient(req);
       
@@ -114,23 +181,18 @@ router.post('/generate', async (req, res) => {
       
     } else {
       const fal = getFalClient(req);
+      const falEndpoint = getFalEndpoint(videoModel);
       
       const processScene = async (scene) => {
         const duration = clampDuration(scene.duration_seconds, videoModel);
-        const { request_id } = await fal.queue.submit('fal-ai/ltx-2/image-to-video', {
-          input: {
-            image_url: scene.image_url,
-            prompt: scene.video_prompt,
-            duration: duration,
-            resolution: resolution,
-            aspect_ratio: aspectRatio,
-          }
-        });
+        const input = buildFalInput(videoModel, scene, duration, resolution, aspectRatio);
+        const { request_id } = await fal.queue.submit(falEndpoint, { input });
         
         return {
           scene_number: scene.scene_number,
           job_id: request_id,
-          status: 'pending'
+          status: 'pending',
+          fal_endpoint: falEndpoint,
         };
       };
       
@@ -147,7 +209,7 @@ router.post('/generate', async (req, res) => {
 router.get('/status/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
-    const { provider = 'fal' } = req.query;
+    const { provider = 'fal', falEndpoint } = req.query;
     
     if (provider === 'replicate') {
       const replicate = getReplicateClient(req);
@@ -166,18 +228,31 @@ router.get('/status/:jobId', async (req, res) => {
       }
     } else {
       const fal = getFalClient(req);
+      // Use the endpoint that was used to submit the job (passed as query param)
+      const endpoint = falEndpoint || 'fal-ai/ltx-2/image-to-video';
       
-      const status = await fal.queue.status('fal-ai/ltx-2/image-to-video', {
+      const status = await fal.queue.status(endpoint, {
         requestId: jobId
       });
       
       if (status.status === 'COMPLETED') {
-        const result = await fal.queue.result('fal-ai/ltx-2/image-to-video', {
-          requestId: jobId
-        });
-        res.json({ status: 'completed', url: result.video?.url || result.media?.url });
+        // Wrap result fetch separately — status and result are two non-atomic calls
+        try {
+          const result = await fal.queue.result(endpoint, { requestId: jobId });
+          const videoUrl = result.video?.url
+            || result.media?.url
+            || result.output?.url
+            || (typeof result.url === 'string' ? result.url : null)
+            || null;
+          res.json({ status: 'completed', url: videoUrl });
+        } catch (resultErr) {
+          console.error('fal result fetch failed after COMPLETED status:', resultErr);
+          // Return pending so the frontend retries next poll cycle
+          res.json({ status: 'pending' });
+        }
       } else if (status.status === 'FAILED') {
-        res.json({ status: 'failed', error: 'Video generation failed' });
+        const errorDetail = status.error || status.logs || 'Video generation failed';
+        res.json({ status: 'failed', error: errorDetail });
       } else {
         res.json({ status: 'pending' });
       }
@@ -212,21 +287,17 @@ router.post('/regenerate', async (req, res) => {
       });
     } else {
       const fal = getFalClient(req);
+      const falEndpoint = getFalEndpoint(videoModel);
       
-      const { request_id } = await fal.queue.submit('fal-ai/ltx-2/image-to-video', {
-        input: {
-          image_url,
-          prompt: video_prompt,
-          duration: duration,
-          resolution: resolution,
-          aspect_ratio: aspectRatio,
-        }
-      });
+      const sceneForBuilder = { video_prompt, image_url };
+      const falInput = buildFalInput(videoModel, sceneForBuilder, duration, resolution, aspectRatio);
+      const { request_id } = await fal.queue.submit(falEndpoint, { input: falInput });
       
       res.json({
         scene_number,
         job_id: request_id,
-        status: 'pending'
+        status: 'pending',
+        fal_endpoint: falEndpoint,
       });
     }
   } catch (error) {

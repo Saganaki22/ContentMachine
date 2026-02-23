@@ -4,11 +4,33 @@ import Replicate from 'replicate';
 import { GoogleGenAI } from '@google/genai';
 const router = express.Router();
 
+// Recursively replace N/A-like sentinel values with a fallback
+const sanitizeNAValues = (obj) => {
+  if (Array.isArray(obj)) return obj.map(sanitizeNAValues);
+  if (obj && typeof obj === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === 'string' && /^(n\/a|none|unknown|tbd|n\.a\.)$/i.test(v.trim())) {
+        // Replace with field-specific sensible defaults
+        if (k === 'clothing') out[k] = 'period-appropriate attire';
+        else if (k === 'weather') out[k] = 'clear';
+        else if (k === 'time_of_day') out[k] = 'midday';
+        else if (k === 'action') out[k] = 'stands in scene';
+        else out[k] = '';
+      } else {
+        out[k] = sanitizeNAValues(v);
+      }
+    }
+    return out;
+  }
+  return obj;
+};
+
 const safeParseJSON = (text) => {
   const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
   
   try {
-    return JSON.parse(cleaned);
+    return sanitizeNAValues(JSON.parse(cleaned));
   } catch (firstErr) {
     // Attempt to repair truncated JSON by closing open structures
     let repaired = cleaned;
@@ -31,14 +53,35 @@ const safeParseJSON = (text) => {
       else if (ch === ']') bracketDepth--;
     }
     
-    // If we're mid-string, close the string first
+    // If we're mid-string, close the string first so depth counts below are valid
     if (inString) repaired += '"';
-    
-    // Remove trailing incomplete key-value pairs (e.g. ,"key": or ,"key":"val)
-    // Strip trailing comma + partial content
-    repaired = repaired.replace(/,\s*"[^"]*"\s*:\s*"?[^"}\]]*$/, '');
-    repaired = repaired.replace(/,\s*"[^"]*"\s*:\s*\[?[^}\]]*$/, '');
-    repaired = repaired.replace(/,\s*"[^"]*"\s*$/, '');
+
+    // Remove trailing incomplete key-value pairs safely.
+    // Strategy: strip from the last top-level comma that is NOT inside a string,
+    // object, or array — this avoids greedy regexes that corrupt prompt strings
+    // containing brackets or quotes (e.g. "holding a [torch]...").
+    // We walk backwards to find the last safe truncation point.
+    {
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      let lastSafeComma = -1;
+      for (let i = 0; i < repaired.length; i++) {
+        const c = repaired[i];
+        if (esc) { esc = false; continue; }
+        if (c === '\\' && inStr) { esc = true; continue; }
+        if (c === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (c === '{' || c === '[') depth++;
+        else if (c === '}' || c === ']') depth--;
+        else if (c === ',' && depth === 1) lastSafeComma = i;
+      }
+      // If the JSON is clearly truncated mid-value at the top level, prune to last safe comma
+      if (lastSafeComma > 0 && (inString || repaired.trimEnd().endsWith(':'))) {
+        repaired = repaired.slice(0, lastSafeComma);
+      }
+    }
+
     repaired = repaired.replace(/,\s*$/, '');
     
     // Re-count after cleanup
@@ -63,7 +106,7 @@ const safeParseJSON = (text) => {
     repaired += '}'.repeat(Math.max(0, braceDepth));
     
     try {
-      const result = JSON.parse(repaired);
+      const result = sanitizeNAValues(JSON.parse(repaired));
       console.warn('safeParseJSON: repaired truncated JSON successfully');
       return result;
     } catch (secondErr) {
@@ -108,10 +151,17 @@ const withReplicateRetry = async (fn, maxRetries = 3) => {
   }
 };
 
-const callClaudeViaReplicate = async (keys, systemPrompt, userContent) => {
+const callClaudeViaReplicate = async (keys, model, systemPrompt, userContent) => {
   const replicate = new Replicate({ auth: keys.replicate });
   
-  const output = await withReplicateRetry(() => replicate.run('anthropic/claude-3.5-sonnet', {
+  // Normalise model identifier: 'claude-3.5-sonnet' → 'anthropic/claude-3.5-sonnet'
+  const replicateModel = model?.startsWith('anthropic/')
+    ? model
+    : model
+      ? `anthropic/${model}`
+      : 'anthropic/claude-3.5-sonnet';
+
+  const output = await withReplicateRetry(() => replicate.run(replicateModel, {
     input: {
       system: systemPrompt,
       prompt: userContent,
@@ -133,7 +183,7 @@ const callGeminiViaReplicate = async (keys, model, systemPrompt, userContent) =>
     'google/gemini-2.5-flash': 'google/gemini-2.5-flash',
     'google/gemini-3-flash': 'google/gemini-3-flash',
     'google/gemini-3.1-pro': 'google/gemini-3.1-pro',
-    'anthropic/claude-3.5-sonnet': 'anthropic/claude-3.5-sonnet',
+    // Note: Claude models are routed via callClaudeViaReplicate, never reach here
   };
   
   const replicateModel = modelMap[model] || 'google/gemini-2.5-flash';
@@ -193,6 +243,8 @@ const callGemini = async (keys, model, systemPrompt, userContent) => {
       throw err;
     }
   }
+  // Safety net: should be unreachable (last attempt always throws above)
+  throw new Error('Gemini: max retries exhausted');
 };
 
 const callClaude = async (req, systemPrompt, userContent) => {
@@ -211,9 +263,10 @@ const callClaude = async (req, systemPrompt, userContent) => {
       return await callGeminiViaReplicate(keys, model, effectiveSystemPrompt, userContent);
     }
     if (model && (model.startsWith('anthropic/') || model.startsWith('claude'))) {
-      return await callClaudeViaReplicate(keys, effectiveSystemPrompt, userContent);
+      return await callClaudeViaReplicate(keys, model, effectiveSystemPrompt, userContent);
     }
-    return await callGeminiViaReplicate(keys, model, effectiveSystemPrompt, userContent);
+    // No recognised model prefix — fail fast instead of silently routing to Gemini
+    throw new Error(`Unsupported Replicate model: "${model}". Use a model starting with "anthropic/", "claude", "gemini", or "google/gemini".`);
   } else {
     if (!keys.fal) throw new Error('fal.ai API key not configured');
     return await callClaudeViaFal(keys, effectiveSystemPrompt, userContent);
@@ -325,12 +378,12 @@ const buildScenePlanningPrompt = (videoModel) => {
     : isKling
       ? 'any integer from 3 to 15'
       : isFast
-        ? '6, 8, 10, 12, 14, 16, 18, or 20'
+        ? 'any even number from 6 to 20 (6, 8, 10, 12, 14, 16, 18, 20)'
         : '6, 8, or 10';
 
   const avgDuration   = isKlingTurbo ? 7 : isKling ? 8 : isFast ? 10 : 8;
   const climateDur    = isKlingTurbo ? '10s' : isKling ? '12-15s' : isFast ? '16-20s' : '10s';
-  const atmosphereDur = isKlingTurbo ? '10s' : isKling ? '10-12s' : isFast ? '12-16s' : '8s';
+  const atmosphereDur = isKlingTurbo ? '10s' : isKling ? '10-12s' : isFast ? '12-14s' : '8s';
 
   const durationGuide = isKlingTurbo ? `
 - 5 seconds: Quick cuts, reactions, action beats, transitions
@@ -342,12 +395,12 @@ const buildScenePlanningPrompt = (videoModel) => {
 - 11-13 seconds: Slow reveals, dramatic peaks
 - 14-15 seconds: Epic establishing shots, maximum impact climax moments` : isFast ? `
 - 6 seconds: Quick cuts, reactions, fast action beats
-- 8 seconds: Standard beats, dialogue, building tension
-- 10 seconds: Establishing shots, emotional peaks, slow reveals
-- 12 seconds: Extended establishing shots, slow reveals with atmosphere
-- 14 seconds: Lingering dramatic moments, complex camera moves
-- 16 seconds: Grand establishing shots, peak emotional climax
-- 18-20 seconds: Epic scenes, key story turning points, maximum impact moments` : `
+- 8 seconds: Standard beats, building tension
+- 10 seconds: Dialogue, character moments, establishing context
+- 12 seconds: Establishing shots, emotional beats
+- 14 seconds: Slow reveals, dramatic tension
+- 16 seconds: Epic establishing shots, climax moments
+- 18-20 seconds: Maximum impact — sweeping reveals, peak emotional moments` : `
 - 6 seconds: Quick cuts, reactions, fast action beats
 - 8 seconds: Standard beats, dialogue, building tension
 - 10 seconds: Establishing shots, emotional peaks, slow reveals, critical moments`;
@@ -357,6 +410,14 @@ const buildScenePlanningPrompt = (videoModel) => {
 INPUT: Selected story object + maxMinutes constraint.
 
 CRITICAL CONSTRAINT: Video durations can ONLY be ${allowedDurations} seconds. No other values allowed.
+
+JSON FIELD RULES (MANDATORY):
+- NEVER use "N/A", "none", "unknown", or empty strings for any field.
+- clothing: ALWAYS specify a real period-accurate outfit (e.g. "leather merchant apron and linen shirt", "silk nobleman doublet with breeches"). No placeholders.
+- action: ALWAYS describe a specific physical action (e.g. "raises torch above head", "kneels examining ground").
+- weather: ALWAYS use a real condition (e.g. "clear", "overcast", "light rain", "heavy fog", "scorching sun").
+- time_of_day: ALWAYS use a real time (e.g. "dawn", "midday", "dusk", "night", "golden hour").
+- key_props: ALWAYS list at least one relevant prop from the scene. Never an empty array.
 
 SMART PACING ALGORITHM (FOLLOW EXACTLY):
 
@@ -391,13 +452,15 @@ Return ONLY valid JSON matching this exact schema. Ensure scene_ids follow s01, 
 router.post('/scene-planning', async (req, res) => {
   try {
     const { story, maxMinutes, videoModel } = req.body;
-    const isKlingTurbo = videoModel === 'kwaivgi/kling-v2.5-turbo-pro';
-    const isKling      = videoModel === 'kwaivgi/kling-v3-video';
-    const isFast       = videoModel === 'lightricks/ltx-2-fast';
-    const allowedDurations = isKlingTurbo
-      ? '5 or 10'
+    // Derive model-specific values once — reused in both system prompt and user content.
+    // buildScenePlanningPrompt() already encodes these; mirror them here for the user message.
+    const isKlingTurbo     = videoModel === 'kwaivgi/kling-v2.5-turbo-pro';
+    const isKling          = videoModel === 'kwaivgi/kling-v3-video';
+    const isFast           = videoModel === 'lightricks/ltx-2-fast';
+    const allowedDurations = isKlingTurbo ? '5 or 10'
       : isKling ? 'any integer from 3 to 15'
-      : isFast ? '6, 8, 10, 12, 14, 16, 18, or 20' : '6, 8, or 10';
+      : isFast  ? 'any even number from 6 to 20 (6, 8, 10, 12, 14, 16, 18, 20)'
+      : '6, 8, or 10';
     const avgDuration      = isKlingTurbo ? 7 : isKling ? 8 : isFast ? 10 : 8;
     const maxSceneDuration = isKlingTurbo ? 10 : isKling ? 15 : isFast ? 20 : 10;
 
@@ -422,7 +485,7 @@ PACING:
 - Dramatic reveals: 2-3 scenes (setup→hold→payoff)
 - Standard beats: 1-2 scenes × 6-8s
 
-Return ONLY this JSON (keep field values concise, max 20 words each):
+Return ONLY this JSON. Every field must have a real, specific value — never "N/A", "none", or vague placeholders:
 {
   "scene_plan": {
     "total_scenes": <NUMBER>,
@@ -435,18 +498,18 @@ Return ONLY this JSON (keep field values concise, max 20 words each):
         "importance": "critical",
         "duration_seconds": 8,
         "shot_type": "wide",
-        "camera_intent": "Brief intent",
-        "visual_description": "Concise scene description max 20 words",
+        "camera_intent": "Slow push-in reveals scale of the fortress walls",
+        "visual_description": "Torchlit stone ramparts at dusk, soldiers in formation on the battlements",
         "mannequin_details": {
-          "count": 1,
-          "action": "Brief action",
-          "clothing": "Period outfit",
+          "count": 2,
+          "action": "stands at attention gripping spear, scanning the horizon",
+          "clothing": "iron chainmail hauberk over linen gambeson, iron helmet, leather boots",
           "porcelain_tone": "off-white"
         },
         "environment": {
-          "time_of_day": "dawn",
-          "weather": "stormy",
-          "key_props": ["prop1"]
+          "time_of_day": "dusk",
+          "weather": "overcast with distant lightning",
+          "key_props": ["iron spears", "burning torch brackets", "stone battlements"]
         }
       }
     ]
@@ -464,7 +527,7 @@ Return ONLY this JSON (keep field values concise, max 20 words each):
 
 const IMAGE_PROMPT_SYSTEM = `You are a cinematic concept artist specializing in photorealistic previsualization for documentary recreations.
 
-INPUT: Single scene object from Scene Plan + NARRATION TEXT for this scene.
+INPUT: Scene objects from the Scene Plan, each containing visual_description, shot_type, mannequin_details, and environment.
 
 VISUAL STYLE MANDATE (NON-NEGOTIABLE):
 - Figures: Seamless glossy porcelain mannequins with perfectly smooth finish - like high-quality ceramic figurines or museum display mannequins.
@@ -483,39 +546,95 @@ VISUAL-NARRATION SYNC:
 The image MUST directly illustrate what the narrator is saying in this scene. If narrator says "Keeper Walsh fought to close the iron door", the image shows a mannequin in full period clothing fighting to close an iron door. The visual matches the spoken words.
 
 CINEMATOGRAPHY VOCABULARY TO USE:
-- Wide establishing: Full environment context, subject small in frame
-- Medium shot: Subject from waist up, environmental context visible
-- Close-up: Detail shot, emotional weight via body language/hands
-- Dutch angle: Tilted frame for unease/tension
-- Low angle: Power, dominance, threat
-- High angle: Vulnerability, surveillance feel
+
+Shot types — pick the most dramatically appropriate for the variation:
+- Extreme wide / aerial establishing: Subject tiny, vast environment dominates
+- Wide establishing: Full environment context, subject readable in frame
+- Medium shot: Subject waist-up, environment visible as context
+- Medium close-up: Chest-up, face/expression body language readable
+- Close-up: Head and shoulders or single object, emotional weight
+- Extreme close-up / macro: Texture detail — fingers, fabric weave, sweat on porcelain, droplets
+- Two-shot: Two figures in frame, spatial relationship conveyed
+- Over-the-shoulder: One figure seen from behind, looking toward subject or horizon
+- POV shot: Camera placed at subject eye-level looking outward
+
+Camera angles — layer onto shot type:
+- Eye-level: Neutral, observational, documentary feel
+- Low angle (worm's eye): Power, dominance, looming threat, heroism
+- High angle (bird's eye): Vulnerability, isolation, God's-eye overview
+- Dutch angle (canted frame, 15–30°): Psychological unease, disorientation, tension
+- Overhead / top-down: Patterns, scale, entrapment
+- Canted extreme (45°+): Chaos, collapse, extreme psychological disturbance
+
+Lens character — inject as texture into the prompt:
+- 14mm ultra-wide: Extreme environmental scale, slight barrel distortion, claustrophobia in tight spaces
+- 24mm wide: Classic cinematic wide, clean perspective, documentary feel
+- 35mm: Natural field of view, intimate without distortion
+- 50mm: Neutral "human eye" perspective, objective clarity
+- 85mm portrait: Compressed background, subject isolation, emotional intimacy
+- 135–200mm telephoto: Heavy background compression, subject extracted from environment, voyeuristic distance
+- Fisheye (full-frame or circular): Extreme distortion, paranoia, dreamlike or supernatural feel, curved horizon
+- Anamorphic widescreen: Oval bokeh, lens flares on highlights, cinematic 2.39:1 feel, horizontal streaks
+
+Depth of field:
+- Razor-thin DOF (f/1.4–f/2): Subject razor-sharp, background melts into abstract colour
+- Shallow DOF (f/2.8–f/4): Subject sharp, background soft and painterly
+- Deep focus (f/8–f/16): Both foreground and background sharp, everything in play
+- Split focus diopter: Two planes in simultaneous focus, foreground object AND distant subject both sharp
+
+LIGHTING VOCABULARY — choose specifically, never use "studio lighting" as a catch-all:
+
+Natural / atmospheric:
+- Golden hour: Warm amber-orange raking light, long shadows stretching across ground
+- Magic hour / blue hour: Cool blue twilight, soft shadowless illumination, melancholic
+- Harsh midday sun: Hard overhead light, deep black shadows, bleached highlights
+- Overcast diffused: Flat even grey light, no shadows, quiet and sombre
+- Moonlight: Cool blue-silver, sharp hard shadows, high contrast silver highlights
+- Firelight / torchlight: Flickering amber-orange, dancing shadows, hot bright centre with deep surrounding darkness
+- Candlelight: Intimate warm point-source, very low key, pools of orange in darkness
+- Lightning flash: Instant harsh white illumination, freezes motion, creates stark shadows
+- Foggy diffusion: Light scatters through mist, halos around sources, flat and eerie
+- Underwater caustics: Rippling light patterns on surfaces, shifting blue-green
+
+Cinematic / artificial:
+- Chiaroscuro (Rembrandt): Strong single-source light carving one side of subject, deep shadow opposite
+- Hard rim / kicker light: Bright edge light separating subject from dark background, hair and shoulder highlighted
+- God rays / crepuscular rays: Shafts of volumetric light through fog, smoke, or gaps in architecture
+- Practical lights in frame: Lanterns, fires, windows — light source visible and driving the scene
+- Neon / coloured gel: Saturated coloured light casting, red/blue/green toned shadows
+- High-key: Bright, low contrast, flat — clinical, oppressive brightness
+- Low-key / noir: Predominantly dark, small pools of light, heavy shadows dominate
+- Three-point lighting: Key + fill + rim, controlled and balanced
+- Silhouette: Subject backlit, front completely dark, form only
+- Contre-jour (shooting into light): Subject lit from behind, glowing edges, foreground in shadow
+- Bioluminescence / practical glow: Objects emit their own eerie blue-green or amber light
+
+Atmospheric / rendering texture:
+- Volumetric fog / god rays: Visible light shafts, atmospheric depth
+- Lens flare: Deliberate flare from bright source — add "anamorphic lens flare" for horizontal streaks
+- Motion blur on environment: Background slightly blurred, suggests speed or wind
+- Chromatic aberration: Slight colour fringing at edges, adds photographic realism
+- Film grain overlay: 35mm grain texture, analogue feel
+- Heat haze / atmospheric distortion: Shimmering air above hot surfaces
 
 COMPOSITION FRAMEWORK:
-"Photorealistic render, ray tracing, Octane render, [camera angle], [environment/weather], fully clothed seamless glossy porcelain mannequin in [detailed period-accurate clothing] showing EXACTLY what narrator describes, [lighting], [props], 8K resolution, cinematic depth of field, no visible stands or supports, hyperrealistic, studio lighting."
+"Photorealistic render, ray tracing, Octane render, [lens + camera angle + shot type], [environment/weather], fully clothed seamless glossy porcelain mannequin in [detailed period-accurate clothing] showing EXACTLY what narrator describes, [specific lighting setup], [atmospheric texture], [props], 8K resolution, [DOF specification], no visible stands or supports, hyperrealistic"
+
+MANDATORY RULES FOR EVERY PROMPT (ALL 4 VARIATIONS PER SCENE):
+- EVERY prompt must contain "seamless glossy porcelain mannequin" with the exact clothing from mannequin_details.clothing
+- EVERY prompt must include "featureless smooth porcelain face, no eyes/nose/mouth"
+- EVERY prompt must include the specific action from mannequin_details.action
+- EVERY prompt must include "8K resolution, no visible stands or supports, hyperrealistic"
+- ALL 4 variations must include the mannequin — Detail and Atmospheric are NOT environment-only shots
+- EVERY prompt must specify a NAMED lighting setup (e.g. "chiaroscuro single-source torchlight", "golden hour raking backlight", "moonlit rim light with deep shadow fill") — never just "dramatic lighting" or "cinematic lighting"
+- EVERY prompt must specify a LENS CHARACTER (e.g. "14mm ultra-wide", "85mm portrait lens", "anamorphic widescreen", "fisheye") matched to the emotional intent of the variation
+- EVERY prompt must specify a DEPTH OF FIELD (e.g. "razor-thin DOF f/1.8, background dissolves to amber bokeh", "deep focus f/11, every plane sharp")
+- Use varied lighting and lens choices ACROSS the 4 variations — do not repeat the same lens or lighting setup twice in one scene
 
 OUTPUT FORMAT:
-Return ONLY valid JSON. Generate 4 distinct variations (Establishing, Intimate, Detail, Atmospheric).`;
+Return ONLY valid JSON. Generate 4 distinct variations per scene (Establishing, Intimate, Detail, Atmospheric).
 
-router.post('/image-prompts', async (req, res) => {
-  try {
-    const { scenePlan } = req.body;
-    
-    const scenesData = scenePlan.scenes.map(scene => ({
-      scene_id: scene.scene_id,
-      scene_number: scene.scene_number,
-      visual_description: scene.visual_description,
-      shot_type: scene.shot_type,
-      camera_intent: scene.camera_intent,
-      mannequin_details: scene.mannequin_details,
-      environment: scene.environment
-    }));
-    
-    const userContent = `Create image prompts for these scenes:
-
-Scenes:
-${JSON.stringify(scenesData, null, 2)}
-
-Return JSON:
+EXAMPLE OUTPUT (follow this structure and level of detail exactly — note the varied lens, lighting, and DOF across all 4 variations):
 {
   "scenes": [
     {
@@ -525,32 +644,91 @@ Return JSON:
         {
           "variation_id": "s01_v1_establishing",
           "type": "establishing",
-          "prompt": "Photorealistic cinematic render, ray tracing, Octane render, low angle looking up at cliff face, storm-lashed lighthouse silhouette against dark storm clouds, massive waves crashing against rocks below, dramatic lightning illumination, rain streaking horizontally, 8K resolution, cinematic depth of field"
+          "prompt": "Photorealistic render, ray tracing, Octane render, 14mm ultra-wide extreme establishing shot looking up at storm-lashed fortress on rocky cliff, seamless glossy porcelain mannequin in iron chainmail hauberk over linen gambeson with iron helmet stands at attention gripping spear on the battlements, featureless smooth porcelain face, off-white porcelain skin tone, massive waves crashing below, dark storm clouds with crepuscular god rays breaking through, practical torchlight bracketing the frame with warm amber against cold storm grey, volumetric fog rolling across the cliff face, deep focus f/11 every plane sharp from foreground rocks to distant horizon, anamorphic widescreen lens flare on torch bracket, iron spears and burning torch brackets visible, 8K resolution, no visible stands or supports, hyperrealistic"
         },
         {
           "variation_id": "s01_v2_intimate",
           "type": "intimate",
-          "prompt": "Full prompt here..."
+          "prompt": "Photorealistic render, ray tracing, Octane render, 85mm portrait lens medium shot waist-up, seamless glossy porcelain mannequin in iron chainmail hauberk over linen gambeson with iron helmet scanning the horizon with hand raised to brow, featureless smooth porcelain face, off-white porcelain skin tone, chiaroscuro single-source torchlight carving the left side of the mannequin in warm amber while the right side falls into deep blue-grey storm shadow, shallow DOF f/2.8 — stone battlements behind dissolve into soft grey bokeh, rain streaking past catching the torchlight as bright silver streaks, iron spear gripped in other hand, 8K resolution, no visible stands or supports, hyperrealistic"
         },
         {
           "variation_id": "s01_v3_detail",
           "type": "detail",
-          "prompt": "Full prompt here..."
+          "prompt": "Photorealistic render, ray tracing, Octane render, 135mm telephoto extreme close-up on hands of seamless glossy porcelain mannequin gripping iron spear shaft, iron chainmail hauberk sleeves visible, off-white porcelain fingers wrapped tight around worn iron, razor-thin DOF f/1.4 — spear grip tack-sharp, chainmail rings dissolve into warm amber bokeh behind, practical torchlight reflecting as a hot white specular highlight off smooth glossy porcelain knuckle surface, individual raindrops on chainmail rings caught mid-fall, chromatic aberration fringing at frame edges, stone battlement edge barely visible in soft focus background, 8K resolution, no visible stands or supports, hyperrealistic"
         },
         {
           "variation_id": "s01_v4_atmospheric",
           "type": "atmospheric",
-          "prompt": "Full prompt here..."
+          "prompt": "Photorealistic render, ray tracing, Octane render, fisheye lens low Dutch angle 25° canted frame, seamless glossy porcelain mannequin in iron chainmail hauberk and iron helmet silhouetted contre-jour against lightning-lit storm clouds, featureless smooth porcelain face turned skyward catching a single lightning flash as cold white rim light along helmet edge and shoulder pauldrons, surrounding scene drops into near-black low-key darkness, off-white porcelain surface catching lightning specular, curved fisheye horizon warps the battlement walls inward, rain streaking horizontally across distorted frame, burning torch brackets visible as small warm amber points in the deep black, deep focus f/8 everything distorted but sharp, 8K resolution, no visible stands or supports, hyperrealistic"
         }
       ],
-      "continuity_checklist": ["Lantern must appear in all variations", "Weather consistent across shots"]
+      "continuity_checklist": ["Mannequin in all 4 variations", "Iron chainmail consistent across shots", "Storm weather consistent", "Torch practical lighting present in all shots", "Off-white porcelain tone consistent"]
     }
   ]
 }`;
-    
+
+router.post('/image-prompts', async (req, res) => {
+  try {
+    const { scenePlan, scenes: scenesOverride } = req.body;
+
+    // Accept either a full scenePlan or a pre-sliced scenes array (for batching)
+    const sourceScenes = scenesOverride || scenePlan?.scenes || [];
+
+    if (sourceScenes.length === 0) {
+      return res.status(400).json({
+        error: true,
+        message: 'No scenes provided — pass either a scenePlan with scenes or a scenes array override.',
+        code: 'NO_SCENES'
+      });
+    }
+
+    const scenesData = sourceScenes.map(scene => ({
+      scene_id: scene.scene_id,
+      scene_number: scene.scene_number,
+      visual_description: scene.visual_description,
+      shot_type: scene.shot_type,
+      camera_intent: scene.camera_intent,
+      mannequin_details: scene.mannequin_details,
+      environment: scene.environment
+    }));
+
+    const userContent = `Create image prompts for these scenes following all rules and the example format in your instructions:
+
+${JSON.stringify(scenesData, null, 2)}`;
+
     const text = await callClaude(req, IMAGE_PROMPT_SYSTEM, userContent);
-    const data = safeParseJSON(text);
-    res.json(data.scenes || data);
+    const parsed = safeParseJSON(text);
+
+    // Normalise to array — Claude sometimes returns { scenes: [...] } or a plain object
+    let scenes;
+    if (Array.isArray(parsed)) {
+      scenes = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      const candidate = parsed.scenes || parsed.image_prompts || parsed.variations;
+      if (Array.isArray(candidate)) {
+        scenes = candidate;
+      } else {
+        const vals = Object.values(parsed);
+        if (vals.length > 0 && vals.every(v => v && typeof v === 'object')) {
+          scenes = vals;
+        } else {
+          return res.status(500).json({
+            error: true,
+            message: 'LLM returned an object instead of an array for image prompts — could not coerce to array',
+            code: 'IMAGE_PROMPTS_NOT_ARRAY',
+            raw: parsed
+          });
+        }
+      }
+    } else {
+      return res.status(500).json({
+        error: true,
+        message: 'LLM returned unexpected type for image prompts',
+        code: 'IMAGE_PROMPTS_NOT_ARRAY'
+      });
+    }
+
+    res.json(scenes);
   } catch (error) {
     console.error('Image prompts error:', error);
     res.status(500).json({ error: true, message: error.message, code: 'IMAGE_PROMPTS_ERROR' });
@@ -570,15 +748,62 @@ VISUAL-NARRATION SYNC:
 The video motion MUST directly illustrate what the narrator says. If narrator says "the door slammed shut", show the door slamming. Match visuals to spoken words.
 
 CAMERA MOVEMENT VOCABULARY TO USE:
-| Movement | Target Duration | Use Case / Feel |
-|---|---|---|
-| Slow push in | 6s, 8s | Building tension, intimate, ominous |
-| Pull back/Reveal | 8s, 10s | Showing scale, awe, dread |
-| Pan left/right | 6s, 8s | Following action, documentary observational |
-| Tilt up/down | 6s, 8s | Showing height, grandeur, vulnerability |
-| Crane up/down | 8s, 10s | Epic scale, arrival/departure |
-| Tracking shot | 8s, 10s | Following subject motion, urgency |
-| Dolly zoom | 10s | Disorientation, psychological shift, climax |
+
+Translational moves:
+| Movement | Feel / Use Case |
+|---|---|
+| Slow push in (dolly forward) | Building tension, intimacy, ominous approach |
+| Pull back / reveal (dolly back) | Scale reveal, awe, isolation, dread |
+| Lateral dolly (left or right) | Following action, documentary observation, parallax depth |
+| Diagonal dolly | Dynamic energy, slight unease |
+| Truck left/right (pure lateral) | Subject stays constant size, background slides — surveillance feel |
+
+Rotational / pivot moves:
+| Movement | Feel / Use Case |
+|---|---|
+| Pan left/right | Following movement, surveying environment |
+| Tilt up | Revealing height, grandeur, aspiration |
+| Tilt down | Weight, consequence, looking at ground or fallen subject |
+| Dutch roll (banking tilt into Dutch angle) | Psychological shift, growing dread |
+| Orbit / arc around subject | 3D reveal, subject as centrepiece, god-like perspective |
+
+Vertical moves:
+| Movement | Feel / Use Case |
+|---|---|
+| Crane up (pedestal rise) | Epic establishing, departure, God's-eye reveal |
+| Crane down (pedestal lower) | Descending into scene, intimacy, weight |
+| Boom sweep | Dramatic arc — combines rise with pan |
+
+Combined / compound moves:
+| Movement | Feel / Use Case |
+|---|---|
+| Dolly zoom (Vertigo effect) | Background grows/shrinks while subject stays constant — psychological rupture |
+| Push in + tilt up | Subject looms larger as camera moves closer and looks up — power |
+| Pull back + crane up | Epic scale reveal — subject recedes into vast environment |
+| Orbit + push in | Spiralling approach — obsession, locked focus |
+| Handheld drift | Subtle organic instability — documentary authenticity, unease |
+| Shake / impact hit | Sudden violent camera movement — explosion, impact, shock |
+
+Specialty / lens-driven motion:
+| Movement | Feel / Use Case |
+|---|---|
+| Rack focus (static camera, focus shifts) | Foreground blurs as background sharpens or vice versa — reveal, consequence |
+| Whip pan | Fast blur across frame — time jump, disorientation, action cut |
+| Snap zoom | Fast crash zoom to subject — emphasis, shock, retro drama |
+| Fisheye drift | Wide distorted lens drifts slowly — dreamlike, paranoid, supernatural |
+| Anamorphic sweep | Horizontal lens flare streaks across frame during pan |
+
+LIGHTING EVOLUTION VOCABULARY (for lighting_evolution field):
+- Flicker to steady: Fire/torch settles — calm after chaos
+- Steady to flicker: Wind picks up — growing threat
+- Lightning strike: Instant full-exposure flash at a specific timestamp, then return to dark
+- God ray sweep: Shaft of volumetric light moves across scene as clouds shift
+- Candle blow-out: Scene dims from warm amber to near-black
+- Dawn break: Gradual warm light creeps across scene from one edge
+- Explosion flash: Bright white-orange burst, then rolling smoke dims the light
+- Shadow sweep: A moving shadow slowly crosses the subject — threat approaching
+- Colour temperature shift: Warm to cool (day to night) or cool to warm (fire ignites)
+- Practical flicker (neon/sign): Intermittent coloured light pulses on subject
 
 DURATION CONSTRAINTS (STRICT):
 You must output instructions that exactly match the scene_plan.duration_seconds.
@@ -589,10 +814,21 @@ Return ONLY valid JSON matching this exact schema.`;
 
 router.post('/video-prompts', async (req, res) => {
   try {
-    const { scenePlan, selectedImages } = req.body;
-    
-    const sceneData = scenePlan.scenes.map(scene => {
-      const selected = selectedImages.find(img => img.scene_number === scene.scene_number);
+    const { scenePlan, scenes: scenesOverride, selectedImages } = req.body;
+
+    // Accept either a full scenePlan or a pre-sliced scenes array (for batching)
+    const sourceScenes = scenesOverride || scenePlan?.scenes || [];
+
+    if (sourceScenes.length === 0) {
+      return res.status(400).json({
+        error: true,
+        message: 'No scenes provided — pass either a scenePlan with scenes or a scenes array override.',
+        code: 'NO_SCENES'
+      });
+    }
+
+    const sceneData = sourceScenes.map(scene => {
+      const selected = (selectedImages || []).find(img => img.scene_number === scene.scene_number);
       return {
         scene_id: scene.scene_id,
         scene_number: scene.scene_number,
@@ -631,7 +867,37 @@ Return JSON:
 ]`;
     
     const text = await callClaude(req, VIDEO_PROMPT_SYSTEM, userContent);
-    const videoPrompts = safeParseJSON(text);
+    const parsed = safeParseJSON(text);
+
+    // Normalise to array — Claude sometimes returns { prompts: [...] } or an object
+    let videoPrompts;
+    if (Array.isArray(parsed)) {
+      videoPrompts = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      const candidate = parsed.prompts || parsed.video_prompts || parsed.scenes;
+      if (Array.isArray(candidate)) {
+        videoPrompts = candidate;
+      } else {
+        const vals = Object.values(parsed);
+        if (vals.length > 0 && vals.every(v => v && typeof v === 'object')) {
+          videoPrompts = vals;
+        } else {
+          return res.status(500).json({
+            error: true,
+            message: 'LLM returned an object instead of an array for video prompts — could not coerce to array',
+            code: 'VIDEO_PROMPTS_NOT_ARRAY',
+            raw: parsed
+          });
+        }
+      }
+    } else {
+      return res.status(500).json({
+        error: true,
+        message: 'LLM returned unexpected type for video prompts',
+        code: 'VIDEO_PROMPTS_NOT_ARRAY'
+      });
+    }
+
     res.json(videoPrompts);
   } catch (error) {
     console.error('Video prompts error:', error);
@@ -673,6 +939,10 @@ Return ONLY valid JSON matching this exact schema. Bracketed cues must be their 
 router.post('/tts-script', async (req, res) => {
   try {
     const { story, scenePlan } = req.body;
+
+    if (!scenePlan?.scenes) {
+      return res.status(400).json({ error: true, message: 'scenePlan.scenes is required', code: 'MISSING_SCENE_PLAN' });
+    }
     
     const sceneDurations = scenePlan.scenes.map(s => 
       `Scene ${s.scene_number} (${s.scene_id}): ${s.duration_seconds}s - ${s.visual_description?.substring(0, 60)}...`
@@ -767,12 +1037,17 @@ Return ONLY valid JSON matching this exact schema.`;
 router.post('/metadata', async (req, res) => {
   try {
     const { story, scenePlan, ttsScript } = req.body;
-    
+
+    if (!scenePlan?.scenes) {
+      return res.status(400).json({ error: true, message: 'scenePlan.scenes is required', code: 'MISSING_SCENE_PLAN' });
+    }
+
     let cumulativeTime = 0;
     const sceneTiming = scenePlan.scenes.map(s => {
       const start = cumulativeTime;
-      cumulativeTime += s.duration_seconds;
-      return { scene_id: s.scene_id, start_seconds: start, duration: s.duration_seconds };
+      const dur = Number(s.duration_seconds) || 0;  // guard against undefined/NaN
+      cumulativeTime += dur;
+      return { scene_id: s.scene_id, start_seconds: start, duration: dur };
     });
     
     const userContent = `Generate YouTube metadata for this documentary:
@@ -898,6 +1173,14 @@ Return JSON:
     const text = await callClaude(req, THUMBNAIL_PROMPT_SYSTEM, userContent);
     const data = safeParseJSON(text);
     const prompts = data.thumbnail_prompts || data.prompts || data;
+    if (!Array.isArray(prompts)) {
+      return res.status(500).json({
+        error: true,
+        message: 'LLM returned an object instead of an array for thumbnail prompts — could not coerce to array',
+        code: 'THUMBNAIL_PROMPTS_NOT_ARRAY',
+        raw: prompts
+      });
+    }
     res.json({ 
       prompts: prompts.map(p => typeof p === 'string' ? p : p.prompt),
       story_climax_analysis: data.story_climax_analysis 
