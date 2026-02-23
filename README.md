@@ -17,6 +17,8 @@
 [![Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/drbaph)
 [![Donate](https://img.shields.io/badge/Donate-Stripe-635BFF?logo=stripe&logoColor=white)](https://donate.stripe.com/eVq4gz6pO2SQ6p4bZw6kg0g)
 
+![ContentMachineBanner](https://github.com/user-attachments/assets/08f94168-10ff-4c34-be0e-18d0a9bd2c7c)
+
 **An all-in-one AI pipeline for creating cinematic, documentary-style videos —  
 from a single topic to a fully packaged YouTube-ready project.**
 
@@ -97,7 +99,7 @@ Topic Input
 
 ### Visual Style
 
-Every scene uses **seamless glossy porcelain mannequins** — a distinctive cinematic aesthetic that sidesteps realistic human likeness while maintaining dramatic storytelling. Figures are always fully clothed in period-accurate outfits, with no visible joints, stands, or supports. Photorealistic environments, ray tracing, cinematic lighting.
+Every scene uses **seamless glossy porcelain mannequins** — a distinctive cinematic aesthetic that sidesteps realistic human likeness while maintaining dramatic storytelling. Figures are always fully clothed in period-accurate outfits, with no visible joints, stands, or supports. Photorealistic environments, ray tracing, cinematic lighting. this is a great starting point if you are youtube focused since it doesn't depict realistic scenes that may have been altered. You may fully customise and finetune your prompts to your own style & liking in the start page (story page) by expanding advanced settings.
 
 ---
 
