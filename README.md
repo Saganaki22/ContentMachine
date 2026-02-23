@@ -26,7 +26,7 @@ from a single topic to a fully packaged YouTube-ready project.**
 
 ---
 
-> **API Status:** I've personally tested this with **Replicate** and **Gemini** APIs — those are the battle-tested paths. **fal.ai support is implemented but not fully verified** — it may have rough edges. PRs welcome!
+> **API Status:** I've personally tested this with **Replicate** and **Gemini** APIs — those are the battle-tested paths. **fal.ai & elevenlabs support is implemented but not fully verified** — it may have rough edges. PRs welcome!
 
 ---
 
