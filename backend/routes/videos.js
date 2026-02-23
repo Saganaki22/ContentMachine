@@ -116,6 +116,38 @@ const getReplicateClient = (req) => {
   return new Replicate({ auth: keys.replicate });
 };
 
+// Parse a base64 data URI into { buffer, mimeType }
+const parseDataUri = (dataUri) => {
+  const match = dataUri.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error('Invalid data URI');
+  return { mimeType: match[1], buffer: Buffer.from(match[2], 'base64') };
+};
+
+// If image_url is a base64 data URI, upload it to the provider's file store
+// and return a stable HTTPS URL the model can actually fetch.
+// Plain HTTPS URLs are returned unchanged.
+const resolveImageUrl = async (imageUrl, provider, client) => {
+  if (!imageUrl || !imageUrl.startsWith('data:')) return imageUrl;
+  try {
+    const { mimeType, buffer } = parseDataUri(imageUrl);
+    if (provider === 'replicate') {
+      // Replicate file store — returns a stable r2 URL
+      const blob = new Blob([buffer], { type: mimeType });
+      const url = await client.files.create(blob, { filename: 'scene.jpg' });
+      return url.urls?.get || url.url || imageUrl;
+    } else {
+      // fal storage upload — returns a CDN URL
+      const blob = new Blob([buffer], { type: mimeType });
+      const file = new File([blob], 'scene.jpg', { type: mimeType });
+      const url = await client.storage.upload(file);
+      return url;
+    }
+  } catch (err) {
+    console.warn('resolveImageUrl: upload failed, proceeding without image input:', err.message);
+    return null;
+  }
+};
+
 // Helper to process in batches of N, with per-item error isolation.
 // A failed item returns { scene_number, error } instead of throwing, so one bad
 // scene never prevents the rest of the batch from being submitted.
@@ -161,7 +193,10 @@ router.post('/generate', async (req, res) => {
       
       const processScene = async (scene) => {
         const duration = clampDuration(scene.duration_seconds, videoModel);
-        const input = buildReplicateInput(videoModel, scene, duration, resolution, aspectRatio);
+        // Upload base64 image to Replicate file store so the model gets an HTTPS URL
+        const resolvedImageUrl = await resolveImageUrl(scene.image_url, 'replicate', replicate);
+        const resolvedScene = { ...scene, image_url: resolvedImageUrl };
+        const input = buildReplicateInput(videoModel, resolvedScene, duration, resolution, aspectRatio);
         
         const prediction = await replicate.predictions.create({
           model: videoModel,
@@ -185,7 +220,10 @@ router.post('/generate', async (req, res) => {
       
       const processScene = async (scene) => {
         const duration = clampDuration(scene.duration_seconds, videoModel);
-        const input = buildFalInput(videoModel, scene, duration, resolution, aspectRatio);
+        // Upload base64 image to fal storage so the model gets an HTTPS URL
+        const resolvedImageUrl = await resolveImageUrl(scene.image_url, 'fal', fal);
+        const resolvedScene = { ...scene, image_url: resolvedImageUrl };
+        const input = buildFalInput(videoModel, resolvedScene, duration, resolution, aspectRatio);
         const { request_id } = await fal.queue.submit(falEndpoint, { input });
         
         return {
@@ -271,8 +309,9 @@ router.post('/regenerate', async (req, res) => {
     
     if (provider === 'replicate') {
       const replicate = getReplicateClient(req);
-      
-      const sceneForBuilder = { video_prompt, image_url };
+      // Upload base64 image to Replicate file store so the model gets an HTTPS URL
+      const resolvedImageUrl = await resolveImageUrl(image_url, 'replicate', replicate);
+      const sceneForBuilder = { video_prompt, image_url: resolvedImageUrl };
       const input = buildReplicateInput(videoModel, sceneForBuilder, duration, resolution, aspectRatio);
       
       const prediction = await replicate.predictions.create({
@@ -288,8 +327,9 @@ router.post('/regenerate', async (req, res) => {
     } else {
       const fal = getFalClient(req);
       const falEndpoint = getFalEndpoint(videoModel);
-      
-      const sceneForBuilder = { video_prompt, image_url };
+      // Upload base64 image to fal storage so the model gets an HTTPS URL
+      const resolvedImageUrl = await resolveImageUrl(image_url, 'fal', fal);
+      const sceneForBuilder = { video_prompt, image_url: resolvedImageUrl };
       const falInput = buildFalInput(videoModel, sceneForBuilder, duration, resolution, aspectRatio);
       const { request_id } = await fal.queue.submit(falEndpoint, { input: falInput });
       

@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { usePipelineStore } from '../store/pipelineStore'
 import ImageCard from '../components/ImageCard'
 import ImageModal from '../components/ImageModal'
+import ExportModal from '../components/ExportModal'
 import toast from 'react-hot-toast'
 
 // Derive human-readable duration range from the selected video model
@@ -178,6 +179,7 @@ function SceneImages() {
   const [selectedModal, setSelectedModal] = useState(null)
   const [regeneratingAll, setRegeneratingAll] = useState(false)
   const [currentPage, setCurrentPage] = useState(0)
+  const [showExportModal, setShowExportModal] = useState(false)
   const allImagesCompleteToastedRef = useRef(false)
 
   const {
@@ -603,6 +605,13 @@ function SceneImages() {
               )}
             </button>
             <button
+              onClick={() => setShowExportModal(true)}
+              disabled={completedCount === 0}
+              className="btn-secondary px-4 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Export Project
+            </button>
+            <button
               onClick={() => navigate('/videos')}
               disabled={!allSelected}
               className="btn-primary px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
@@ -612,6 +621,13 @@ function SceneImages() {
           </div>
         </div>
       </div>
+
+      {/* Export modal */}
+      <AnimatePresence>
+        {showExportModal && (
+          <ExportModal onClose={() => setShowExportModal(false)} />
+        )}
+      </AnimatePresence>
 
       {/* Full-screen image modal */}
       <AnimatePresence>

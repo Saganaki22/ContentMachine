@@ -95,24 +95,46 @@ function Layout({ children }) {
   const currentStepIndex = steps.findIndex(s => s.path === location.pathname)
 
   const handleSaveProject = () => {
-    try {
-      const project = exportProject()
-      const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      const date = new Date().toISOString().split('T')[0]
-      const title = selectedStory?.title || 'project'
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 30)
-      link.download = `${slug}_${date}.json`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      URL.revokeObjectURL(url)
-      toast.success('Project saved')
-    } catch (err) {
-      toast.error('Failed to save project')
+    const project = exportProject()
+    const date = new Date().toISOString().split('T')[0]
+    const title = selectedStory?.title || 'project'
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 30)
+    const filename = `${slug}_${date}.json`
+
+    toast.loading('Saving project...', { id: 'save-project' })
+
+    // Serialize off the main thread — large base64 image sets will freeze the
+    // tab if JSON.stringify runs synchronously here.
+    const worker = new Worker(
+      new URL('../workers/jsonSerializer.worker.js', import.meta.url),
+      { type: 'module' }
+    )
+    worker.onmessage = (e) => {
+      worker.terminate()
+      if (!e.data.ok) {
+        toast.error('Failed to save project', { id: 'save-project' })
+        return
+      }
+      try {
+        const blob = new Blob([e.data.json], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        URL.revokeObjectURL(url)
+        toast.success('Project saved', { id: 'save-project' })
+      } catch {
+        toast.error('Failed to save project', { id: 'save-project' })
+      }
     }
+    worker.onerror = () => {
+      worker.terminate()
+      toast.error('Failed to save project', { id: 'save-project' })
+    }
+    worker.postMessage(project)
   }
 
   const hasProgress = !!(selectedStory || Object.keys(selectedImages || {}).length > 0)
