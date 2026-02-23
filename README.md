@@ -27,7 +27,7 @@ from a single topic to a fully packaged YouTube-ready project.**
 
 </div>
 
-## 🎥 Watch the Demo
+## 🎥 Watch the Example
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=3BC8OXMzeF4">
@@ -35,7 +35,13 @@ from a single topic to a fully packaged YouTube-ready project.**
   </a>
 </p>
 
-[![Watch the demo](https://img.youtube.com/vi/3BC8OXMzeF4/maxresdefault.jpg)](https://www.youtube.com/watch?v=3BC8OXMzeF4)
+[![Watch the example](https://img.youtube.com/vi/3BC8OXMzeF4/maxresdefault.jpg)](https://www.youtube.com/watch?v=3BC8OXMzeF4)
+
+# UI Demo
+
+https://github.com/user-attachments/assets/2e440220-d31d-41e7-9adc-242fc97bd06b
+
+
 
 ---
 
