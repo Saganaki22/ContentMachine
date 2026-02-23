@@ -24,6 +24,10 @@ from a single topic to a fully packaged YouTube-ready project.**
 
 </div>
 
+## 🎥 Watch the Demo
+
+[![Watch the demo](https://img.youtube.com/vi/3BC8OXMzeF4/maxresdefault.jpg)](https://www.youtube.com/watch?v=3BC8OXMzeF4)
+
 ---
 
 > **API Status:** I've personally tested this with **Replicate** and **Gemini** APIs — those are the battle-tested paths. **fal.ai & elevenlabs support is implemented but not fully verified** — it may have rough edges. PRs welcome!
