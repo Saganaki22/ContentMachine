@@ -142,7 +142,7 @@ Every scene uses **seamless glossy porcelain mannequins** — a distinctive cine
 
 ## Real-World Cost
 
-> A **3-minute documentary video** produced entirely with ContentMachine cost approximately **$10 USD**.
+> A **4:30 minute documentary video** produced with ContentMachine cost me approximately **$28 USD**.
 
 | Component | Provider / Model Used | Notes |
 |---|---|---|
