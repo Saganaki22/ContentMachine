@@ -17,7 +17,8 @@
 [![Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/drbaph)
 [![Donate](https://img.shields.io/badge/Donate-Stripe-635BFF?logo=stripe&logoColor=white)](https://donate.stripe.com/eVq4gz6pO2SQ6p4bZw6kg0g)
 
-![ContentMachineBanner](https://github.com/user-attachments/assets/08f94168-10ff-4c34-be0e-18d0a9bd2c7c)
+![ContentMachineBanner-jpeg](https://github.com/user-attachments/assets/5a00c422-87de-4773-ad07-fd27892f32d7)
+
 
 **An all-in-one AI pipeline for creating cinematic, documentary-style videos —  
 from a single topic to a fully packaged YouTube-ready project.**
@@ -27,6 +28,12 @@ from a single topic to a fully packaged YouTube-ready project.**
 </div>
 
 ## 🎥 Watch the Demo
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=3BC8OXMzeF4">
+    <img src="https://img.shields.io/badge/▶_Watch_Full_Demo-YouTube-FF0000?style=for-the-badge&logo=youtube" alt="Watch Demo on YouTube">
+  </a>
+</p>
 
 [![Watch the demo](https://img.youtube.com/vi/3BC8OXMzeF4/maxresdefault.jpg)](https://www.youtube.com/watch?v=3BC8OXMzeF4)
 
