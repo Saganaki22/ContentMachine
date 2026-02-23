@@ -383,7 +383,7 @@ const GEMINI_IMAGE_MODELS = [
 
 const REPLICATE_VIDEO_MODELS = [
   { value: 'lightricks/ltx-2-pro', label: 'LTX-2 Pro (best quality)' },
-  { value: 'lightricks/ltx-2-fast', label: 'LTX-2 Fast (cheaper · up to 20s)' },
+  { value: 'lightricks/ltx-2-fast', label: 'LTX-2 Fast (cheaper · 6–20s)' },
   { value: 'kwaivgi/kling-v3-video', label: 'Kling v3 (cinematic · up to 15s)' },
   { value: 'kwaivgi/kling-v2.5-turbo-pro', label: 'Kling 2.5 Turbo Pro (5s or 10s)' },
 ]

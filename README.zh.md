@@ -12,11 +12,28 @@
 [![Gemini](https://img.shields.io/badge/Google%20Gemini-已测试-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://aistudio.google.com)
 [![ElevenLabs](https://img.shields.io/badge/ElevenLabs-TTS-purple?style=for-the-badge)](https://elevenlabs.io)
 
+## ❤️ 支持本项目
+
+[![Ko-fi](https://img.shields.io/badge/支持-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/drbaph)
+[![Donate](https://img.shields.io/badge/捐赠-Stripe-635BFF?logo=stripe&logoColor=white)](https://donate.stripe.com/eVq4gz6pO2SQ6p4bZw6kg0g)
+
+![ContentMachineBanner-jpeg](https://github.com/user-attachments/assets/5a00c422-87de-4773-ad07-fd27892f32d7)
+
 **一站式 AI 流水线——从一个主题出发，生成完整的电影风格纪录片，直至打包好的 YouTube 就绪项目。**
 
 [流水线流程](#流水线流程) · [模型与 API](#支持的模型与-api) · [实际费用](#实际费用) · [快速开始](#快速开始) · [功能特性](#功能特性)
 
 </div>
+
+## 🎥 观看演示
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=3BC8OXMzeF4">
+    <img src="https://img.shields.io/badge/▶_观看完整演示-YouTube-FF0000?style=for-the-badge&logo=youtube" alt="在 YouTube 上观看演示">
+  </a>
+</p>
+
+[![观看演示](https://img.youtube.com/vi/3BC8OXMzeF4/maxresdefault.jpg)](https://www.youtube.com/watch?v=3BC8OXMzeF4)
 
 ---
 
@@ -28,7 +45,7 @@
 
 ContentMachine 使用最先进的 AI 自动完成整个纪录片制作流程。只需输入一个主题，它会处理所有事情：挖掘真实历史故事、规划场景、生成图像、制作视频片段、撰写解说词、生成配音、YouTube 元数据和缩略图——最终打包成一个整洁的 ZIP 文件，随时可导入视频编辑器。
 
-专为**内容创作者、纪录片制作人、教育者和爱好者**打造，无需完整制作团队即可产出高质量的电影风格内容。
+专为**内容创作者、纪录片制作人、教育者和爱好者**打造，无需完整制作团队即可产出高质量的电影风格内容。您可以在起始页（故事页面）展开高级设置，完全自定义并微调您的提示词，打造属于自己的风格。
 
 > **这是我为自己打造的一体化流水线**——本地运行足够简单，AI 提供商可灵活切换，一次会话即可产出发布就绪的素材。
 
@@ -87,7 +104,9 @@ ContentMachine 按步骤运行，提供简洁的 UI 界面，可在任意阶段�
 
 ### 视觉风格
 
-每个场景均使用**无缝光泽瓷器人体模型**——这种独特的电影美学既规避了真实人像的问题，又保持了戏剧性的叙事张力。人物始终穿着符合历史时期的服装，无可见接缝、支架或支撑物。写实环境、光线追踪、电影级布光。
+默认美学使用**无缝光泽瓷器人体模型**——人物始终穿着符合历史时期的服装，无可见接缝、支架或支撑物。写实环境、光线追踪、电影级布光。对于 YouTube 内容创作者而言，这是一个极佳的起点，因为它不描绘可能被篡改的真实场景。
+
+视觉风格完全可自定义：在起始页展开 **Advanced — Customize System Prompts**，即可编辑适用于任意角色类型的图像提示词规则。结合下方的**角色基础图像**功能，可在所有场景中锁定一致的外观。
 
 ---
 
@@ -132,7 +151,7 @@ ContentMachine 按步骤运行，提供简洁的 UI 界面，可在任意阶段�
 
 ## 实际费用
 
-> 使用 ContentMachine 全程制作一个**3 分钟纪录片视频**，费用约为 **10 美元**。
+> 使用 ContentMachine 全程制作一个 **4:30 分钟纪录片视频**，费用约为 **28 美元**。
 
 | 组件 | 使用的提供商/模型 | 说明 |
 |---|---|---|
@@ -210,7 +229,7 @@ ContentMachine/
 │
 └── frontend/src/
     ├── pages/
-    │   ├── StorySelect.jsx      第 1 步——主题输入、故事选择、宽高比、高级提示词
+    │   ├── StorySelect.jsx      第 1 步——主题输入、故事选择、宽高比、角色图像、高级提示词
     │   ├── SceneImages.jsx      第 2 步——图像生成与选择
     │   ├── VideoGeneration.jsx  第 3 步——视频生成 + 解说脚本
     │   ├── AudioGeneration.jsx  第 4 步——TTS 配音（可选）
@@ -265,6 +284,14 @@ ContentMachine/
 - **保存在 localStorage**——每次会话启动时自动加载至后端，无需重复输入
 - **单独清除按钮**——红色清除按钮可立即从 localStorage 和后端移除对应密钥
 - **保存前验证**——测试按钮在存储前验证每个密钥是否有效
+
+### 角色基础图像
+- **上传参考图像**——在起始页分别上传男性和/或女性角色参考图像（JPG、PNG、WebP，单张最大 10 MB）
+- **支持任意角色风格**——瓷器人体模型、写实人物、动漫角色或其他任何风格均可；在可选的**角色风格**文本框中描述风格，模型将按此执行
+- **随每个场景发送**——参考图像随每次图像生成请求一同发送，使模型在所有场景中保持角色的比例、肤色和发型一致
+- **场景服装始终覆盖**——每个场景仍会从场景规划中获取符合历史时期的服装和姿势；锁定的仅是角色外观
+- **模型感知传递**——Nano Banana Pro（Replicate 和 fal）及 Gemini 接收实际图像作为多模态输入；其他模型则接收文本一致性提示
+- **随"重新开始"重置**——开始新项目时，角色图像和描述将被清除
 
 ### 自定义
 - **高级系统提示词**——起始页可展开的区域，包含 7 个流水线阶段的可编辑文本框（故事选择、场景规划、图像提示词、视频提示词、解说脚本、YouTube 元数据、缩略图提示词）

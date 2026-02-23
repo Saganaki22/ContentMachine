@@ -94,6 +94,20 @@ export const usePipelineStore = create(
         thumbnailPrompts: '',
       },
 
+      // Base character reference images (base64 data URIs) for consistent character generation
+      // Users can optionally upload a male and/or female reference figure.
+      // These are sent as image_input to the model so it can apply scene-appropriate
+      // clothing, accessories, and styling while preserving the character likeness.
+      characterImages: {
+        male: null,   // base64 data URI or null
+        female: null, // base64 data URI or null
+      },
+
+      // Optional free-text description of the character style (e.g. "porcelain mannequin",
+      // "realistic human", "anime character"). Sent alongside character images so the model
+      // knows how to interpret and replicate the reference.
+      characterDescription: '',
+
       // ─── Settings ─────────────────────────────────────────────────────────
       setTopic: (topic) => set({ topic }),
       setMaxMinutes: (maxMinutes) => set({ maxMinutes }),
@@ -164,6 +178,16 @@ export const usePipelineStore = create(
       setCustomPrompt: (key, value) => set((state) => ({
         customPrompts: { ...state.customPrompts, [key]: value }
       })),
+
+      setCharacterImage: (gender, dataUri) => set((state) => ({
+        characterImages: { ...state.characterImages, [gender]: dataUri }
+      })),
+
+      clearCharacterImage: (gender) => set((state) => ({
+        characterImages: { ...state.characterImages, [gender]: null }
+      })),
+
+      setCharacterDescription: (description) => set({ characterDescription: description }),
 
       // ─── Generation control ───────────────────────────────────────────────
       setGenerationState: (generationState) => set({ generationState }),
@@ -253,7 +277,8 @@ export const usePipelineStore = create(
 
       fetchImagePrompts: async (scenePlan, resumeFromPending = false) => {
         const plan = scenePlan || get().scenePlan
-        const { settings } = get()
+        const { settings, characterImages, characterDescription } = get()
+        const charImgList = Object.values(characterImages || {}).filter(Boolean)
         if (!plan) return
 
         if (!resumeFromPending) {
@@ -407,7 +432,7 @@ export const usePipelineStore = create(
 
             try {
               const results = await api.generateImages(
-                scenePromptTexts, settings.imageProvider, settings.imageModel, settings.aspectRatio
+                scenePromptTexts, settings.imageProvider, settings.imageModel, settings.aspectRatio, charImgList, characterDescription
               )
 
               const base64Urls = await Promise.all(
@@ -477,7 +502,8 @@ export const usePipelineStore = create(
 
       // Retry a single failed batch (re-runs just those scenes through the LLM + image generation)
       retryImageBatch: async (batchIndex) => {
-        const { scenePlan, imageBatches, settings } = get()
+        const { scenePlan, imageBatches, settings, characterImages, characterDescription } = get()
+        const charImgList = Object.values(characterImages || {}).filter(Boolean)
         const batch = imageBatches[batchIndex]
         if (!batch || !scenePlan) return
 
@@ -563,7 +589,7 @@ export const usePipelineStore = create(
             set(state => ({ imagesLoading: { ...state.imagesLoading, [key]: true } }))
             try {
               const results = await api.generateImages(
-                [prompt], settings.imageProvider, settings.imageModel, settings.aspectRatio
+                [prompt], settings.imageProvider, settings.imageModel, settings.aspectRatio, charImgList, characterDescription
               )
               const base64Url = results[0]?.url ? await toBase64DataUri(results[0].url) : null
               set(state => {
@@ -622,7 +648,8 @@ export const usePipelineStore = create(
 
       regenerateImage: async (sceneNumber, promptIndex, newPrompt) => {
         const key = `${sceneNumber}_${promptIndex}`
-        const { images, settings } = get()
+        const { images, settings, characterImages, characterDescription } = get()
+        const charImgList = Object.values(characterImages || {}).filter(Boolean)
         const prompt = newPrompt || images[key]?.prompt
         if (!prompt) return
 
@@ -632,7 +659,7 @@ export const usePipelineStore = create(
 
         try {
           const result = await api.regenerateImage(
-            prompt, settings.imageProvider, settings.imageModel, settings.aspectRatio
+            prompt, settings.imageProvider, settings.imageModel, settings.aspectRatio, charImgList, characterDescription
           )
           const b64url = await toBase64DataUri(result.url)
           set((state) => {
@@ -665,7 +692,8 @@ export const usePipelineStore = create(
       },
 
       regenerateAllImages: async () => {
-        const { scenes, settings, imageProgress } = get()
+        const { scenes, settings, imageProgress, characterImages, characterDescription } = get()
+        const charImgList = Object.values(characterImages || {}).filter(Boolean)
         if (!scenes.length) return
 
         // Build list of all prompts grouped by scene
@@ -721,7 +749,7 @@ export const usePipelineStore = create(
 
           try {
             const results = await api.generateImages(
-              scenePromptTexts, settings.imageProvider, settings.imageModel, settings.aspectRatio
+              scenePromptTexts, settings.imageProvider, settings.imageModel, settings.aspectRatio, charImgList, characterDescription
             )
 
             const base64Urls = await Promise.all(
@@ -1535,7 +1563,9 @@ export const usePipelineStore = create(
           generationState: 'idle',
           generationPhase: null,
           imageProgress: { total: 0, completed: [], pending: [] },
-          videoProgress: { total: 0, completed: [], pending: [] }
+          videoProgress: { total: 0, completed: [], pending: [] },
+          characterImages: { male: null, female: null },
+          characterDescription: '',
         })
       }
     }),

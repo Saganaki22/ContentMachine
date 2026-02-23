@@ -21,11 +21,22 @@ const exportedApi = {
   generateScenePlan: (story, maxMinutes, provider = 'fal', model, systemPrompt, videoModel) =>
     api.post('/claude/scene-planning', { story, maxMinutes, provider, model, systemPrompt: systemPrompt || undefined, videoModel }).then(r => r.data),
   
-  generateImagePrompts: (scenePlan, aspectRatio, provider = 'fal', model, systemPrompt) =>
-    api.post('/claude/image-prompts', { scenePlan, aspectRatio, provider, model, systemPrompt: systemPrompt || undefined }).then(r => r.data),
+  generateImagePrompts: (scenePlan, aspectRatio, provider = 'fal', model, systemPrompt, scenesOverride) =>
+    api.post('/claude/image-prompts', {
+      scenePlan: scenesOverride ? undefined : scenePlan,
+      scenes: scenesOverride || undefined,
+      aspectRatio, provider, model, systemPrompt: systemPrompt || undefined
+    }).then(r => r.data),
   
-  generateVideoPrompts: (scenePlan, selectedImages, provider = 'fal', model, systemPrompt) =>
-    api.post('/claude/video-prompts', { scenePlan, selectedImages, provider, model, systemPrompt: systemPrompt || undefined }).then(r => r.data),
+  generateVideoPrompts: (scenePlan, selectedImages, provider = 'fal', model, systemPrompt, scenesOverride) =>
+    api.post('/claude/video-prompts', {
+      scenePlan: scenesOverride ? undefined : scenePlan,
+      scenes: scenesOverride || undefined,
+      selectedImages,
+      provider,
+      model,
+      systemPrompt: systemPrompt || undefined
+    }).then(r => r.data),
   
   generateTtsScript: (story, scenePlan, provider = 'fal', model, systemPrompt) =>
     api.post('/claude/tts-script', { story, scenePlan, provider, model, systemPrompt: systemPrompt || undefined }).then(r => r.data),
@@ -36,29 +47,46 @@ const exportedApi = {
   generateThumbnailPrompts: (story, selectedTitle, thumbnailConcept, provider = 'fal', model, systemPrompt) =>
     api.post('/claude/thumbnail-prompts', { story, selectedTitle, thumbnailConcept, provider, model, systemPrompt: systemPrompt || undefined }).then(r => r.data),
   
-  generateImages: (prompts, provider, model, aspectRatio) => {
-    console.log('API generateImages request:', { promptCount: prompts?.length, provider, model, aspectRatio })
-    return api.post('/images/generate', { prompts, provider, model, aspectRatio })
-      .then(r => {
-        console.log('API generateImages response:', r.data)
-        return r.data
-      })
+  generateImages: (prompts, provider, model, aspectRatio, characterImages, characterDescription) => {
+    const charImgs = characterImages?.filter(Boolean) ?? []
+    console.log('API generateImages request:', { promptCount: prompts?.length, provider, model, aspectRatio, charImgCount: charImgs.length, characterDescription: characterDescription || '(none)' })
+    return api.post('/images/generate', {
+      prompts,
+      provider,
+      model,
+      aspectRatio,
+      ...(charImgs.length ? { characterImages: charImgs } : {}),
+      ...(characterDescription ? { characterDescription } : {}),
+    }).then(r => {
+      console.log('API generateImages response:', r.data)
+      return r.data
+    })
   },
   
-  regenerateImage: (prompt, provider, model, aspectRatio) => {
-    console.log('API regenerateImage request:', { provider, model, aspectRatio })
-    return api.post('/images/regenerate', { prompt, provider, model, aspectRatio })
-      .then(r => {
-        console.log('API regenerateImage response:', r.data)
-        return r.data
-      })
+  regenerateImage: (prompt, provider, model, aspectRatio, characterImages, characterDescription) => {
+    const charImgs = characterImages?.filter(Boolean) ?? []
+    console.log('API regenerateImage request:', { provider, model, aspectRatio, charImgCount: charImgs.length, characterDescription: characterDescription || '(none)' })
+    return api.post('/images/regenerate', {
+      prompt,
+      provider,
+      model,
+      aspectRatio,
+      ...(charImgs.length ? { characterImages: charImgs } : {}),
+      ...(characterDescription ? { characterDescription } : {}),
+    }).then(r => {
+      console.log('API regenerateImage response:', r.data)
+      return r.data
+    })
   },
   
   generateVideos: (scenes, provider = 'fal', resolution = '1080p', aspectRatio = '16:9', videoModel) =>
     api.post('/videos/generate', { scenes, provider, resolution, aspectRatio, videoModel }).then(r => r.data),
   
-  getVideoStatus: (jobId, provider = 'fal') =>
-    api.get(`/videos/status/${jobId}?provider=${provider}`).then(r => r.data),
+  getVideoStatus: (jobId, provider = 'fal', falEndpoint) => {
+    const params = new URLSearchParams({ provider });
+    if (falEndpoint) params.set('falEndpoint', falEndpoint);
+    return api.get(`/videos/status/${jobId}?${params}`).then(r => r.data);
+  },
   
   regenerateVideo: (sceneNumber, videoPrompt, durationSeconds, imageUrl, provider = 'fal', resolution = '1080p', aspectRatio = '16:9', videoModel) =>
     api.post('/videos/regenerate', {

@@ -106,7 +106,9 @@ Topic Input
 
 ### Visual Style
 
-Every scene uses **seamless glossy porcelain mannequins** — a distinctive cinematic aesthetic that sidesteps realistic human likeness while maintaining dramatic storytelling. Figures are always fully clothed in period-accurate outfits, with no visible joints, stands, or supports. Photorealistic environments, ray tracing, cinematic lighting. this is a great starting point if you are youtube focused since it doesn't depict realistic scenes that may have been altered. You may fully customise and finetune your prompts to your own style & liking in the start page (story page) by expanding advanced settings.
+The default aesthetic uses **seamless glossy porcelain mannequins** — figures always fully clothed in period-accurate outfits, no visible joints, stands, or supports. Photorealistic environments, ray tracing, cinematic lighting. A great starting point for YouTube-focused creators since it avoids depicting realistic scenes that may have been altered.
+
+The visual style is fully customisable: expand **Advanced — Customize System Prompts** on the start page to edit the image prompt rules for any character type. Pair this with the **Character Base Images** feature (see below) to lock in a consistent look across every scene.
 
 ---
 
@@ -229,7 +231,7 @@ ContentMachine/
 │
 └── frontend/src/
     ├── pages/
-    │   ├── StorySelect.jsx      Step 1 — topic input, story selection, aspect ratio, advanced prompts
+    │   ├── StorySelect.jsx      Step 1 — topic input, story selection, aspect ratio, character images, advanced prompts
     │   ├── SceneImages.jsx      Step 2 — image generation + selection
     │   ├── VideoGeneration.jsx  Step 3 — video generation + narration script
     │   ├── AudioGeneration.jsx  Step 4 — TTS voiceover (optional)
@@ -284,6 +286,14 @@ ContentMachine/
 - **Saved in localStorage** — keys auto-loaded into the backend on every session start, no re-entry needed
 - **Per-key Clear button** — red clear button removes a key from localStorage and the backend instantly
 - **Validate before saving** — Test button checks each key is valid before storing
+
+### Character Base Images
+- **Upload reference images** — upload a male and/or female character reference (JPG, PNG, WebP, max 10 MB each) on the start page
+- **Works for any character style** — mannequins, realistic humans, anime characters, or anything else; describe the style in the optional **Character style** text field and the model follows it
+- **Sent with every scene** — reference images are included with every image generation request so the model preserves the character's proportions, tone, and hair across all scenes
+- **Scene clothing always overridden** — each scene still gets its own era-correct clothing and pose from the scene plan; only the character appearance is locked in
+- **Model-aware delivery** — Nano Banana Pro (Replicate & fal) and Gemini receive the actual images as multimodal input; all other models receive a text consistency hint instead
+- **Resets with "Start Fresh"** — character images and description are cleared when starting a new project
 
 ### Customization
 - **Advanced System Prompts** — expandable section on the start page with editable textareas for all 7 pipeline stages (story selection, scene planning, image prompts, video prompts, narration script, YouTube metadata, thumbnail prompts)
