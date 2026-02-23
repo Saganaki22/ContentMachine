@@ -1,0 +1,21 @@
+{
+  "name": "content-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "concurrently": "^8.2.2",
+    "eslint": "^10.0.0",
+    "globals": "^17.3.0"
+  },
+  "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.36.0",
+    "archiver": "^7.0.1"
+  }
+}
