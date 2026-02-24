@@ -84,7 +84,6 @@ function Layout({ children }) {
     resumeImageGeneration,
     resumeVideoGeneration,
     loadProject,
-    exportProject,
     autoSaveSession,
   } = usePipelineStore()
 
@@ -124,50 +123,6 @@ function Layout({ children }) {
 
   const currentStepIndex = steps.findIndex(s => s.path === location.pathname)
 
-  const handleSaveProject = () => {
-    const project = exportProject()
-    const date = new Date().toISOString().split('T')[0]
-    const title = selectedStory?.title || 'project'
-    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 30)
-    const filename = `${slug}_${date}.json`
-
-    toast.loading('Saving project...', { id: 'save-project' })
-
-    // Serialize off the main thread — large base64 image sets will freeze the
-    // tab if JSON.stringify runs synchronously here.
-    const worker = new Worker(
-      new URL('../workers/jsonSerializer.worker.js', import.meta.url),
-      { type: 'module' }
-    )
-    worker.onmessage = (e) => {
-      worker.terminate()
-      if (!e.data.ok) {
-        toast.error('Failed to save project', { id: 'save-project' })
-        return
-      }
-      try {
-        const blob = new Blob([e.data.json], { type: 'application/json' })
-        const url = URL.createObjectURL(blob)
-        const link = document.createElement('a')
-        link.href = url
-        link.download = filename
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-        URL.revokeObjectURL(url)
-        toast.success('Project saved', { id: 'save-project' })
-      } catch {
-        toast.error('Failed to save project', { id: 'save-project' })
-      }
-    }
-    worker.onerror = () => {
-      worker.terminate()
-      toast.error('Failed to save project', { id: 'save-project' })
-    }
-    worker.postMessage(project)
-  }
-
-  const hasProgress = !!(selectedStory || Object.keys(selectedImages || {}).length > 0)
 
   const getStepState = (index) => {
     if (index === 0) return selectedStory ? 'completed' : currentStepIndex === 0 ? 'active' : 'upcoming'
@@ -403,17 +358,6 @@ function Layout({ children }) {
         <div className="w-44 flex items-center justify-end gap-1 shrink-0">
           <input ref={fileInputRef} type="file" accept=".json,.zip" onChange={handleLoadProject} className="hidden" />
 
-          {hasProgress && (
-            <button
-              onClick={handleSaveProject}
-              title="Save project"
-              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-raised text-text-secondary hover:text-text-primary transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
-              </svg>
-            </button>
-          )}
 
           <button
             onClick={() => fileInputRef.current?.click()}

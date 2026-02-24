@@ -381,9 +381,9 @@ const buildScenePlanningPrompt = (videoModel) => {
         ? 'any even number from 6 to 20 (6, 8, 10, 12, 14, 16, 18, 20)'
         : '6, 8, or 10';
 
-  const avgDuration   = isKlingTurbo ? 7 : isKling ? 8 : isFast ? 10 : 8;
-  const climateDur    = isKlingTurbo ? '10s' : isKling ? '12-15s' : isFast ? '16-20s' : '10s';
-  const atmosphereDur = isKlingTurbo ? '10s' : isKling ? '10-12s' : isFast ? '12-14s' : '8s';
+  const avgDuration   = isKlingTurbo ? 7 : isKling ? 8 : isFast ? 14 : 8;
+  const climateDur    = isKlingTurbo ? '10s' : isKling ? '12-15s' : isFast ? '18-20s' : '10s';
+  const atmosphereDur = isKlingTurbo ? '10s' : isKling ? '10-12s' : isFast ? '14-16s' : '8s';
 
   const durationGuide = isKlingTurbo ? `
 - 5 seconds: Quick cuts, reactions, action beats, transitions
@@ -394,13 +394,14 @@ const buildScenePlanningPrompt = (videoModel) => {
 - 9-10 seconds: Establishing shots, emotional moments
 - 11-13 seconds: Slow reveals, dramatic peaks
 - 14-15 seconds: Epic establishing shots, maximum impact climax moments` : isFast ? `
-- 6 seconds: Quick cuts, reactions, fast action beats
-- 8 seconds: Standard beats, building tension
-- 10 seconds: Dialogue, character moments, establishing context
-- 12 seconds: Establishing shots, emotional beats
-- 14 seconds: Slow reveals, dramatic tension
-- 16 seconds: Epic establishing shots, climax moments
-- 18-20 seconds: Maximum impact — sweeping reveals, peak emotional moments` : `
+- 6 seconds: ONLY for very fast cuts, sharp reactions, sudden action beats — use sparingly
+- 8 seconds: Quick beats, punchy transitions
+- 10 seconds: Standard dialogue and character moments
+- 12 seconds: Establishing shots, emotional beats — prefer this as your baseline
+- 14 seconds: Slow reveals, dramatic tension — use frequently
+- 16 seconds: Epic establishing shots, important narrative turns
+- 18-20 seconds: Maximum impact sweeping reveals, climax moments — use generously for key scenes
+NOTE: The model handles up to 20s natively. Favour 12-20s for most scenes to make full use of the model's capability.` : `
 - 6 seconds: Quick cuts, reactions, fast action beats
 - 8 seconds: Standard beats, dialogue, building tension
 - 10 seconds: Establishing shots, emotional peaks, slow reveals, critical moments`;
