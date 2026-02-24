@@ -462,8 +462,10 @@ router.post('/scene-planning', async (req, res) => {
       : isKling ? 'any integer from 3 to 15'
       : isFast  ? 'any even number from 6 to 20 (6, 8, 10, 12, 14, 16, 18, 20)'
       : '6, 8, or 10';
-    const avgDuration      = isKlingTurbo ? 7 : isKling ? 8 : isFast ? 10 : 8;
+    const avgDuration      = isKlingTurbo ? 7 : isKling ? 8 : isFast ? 14 : 8;
     const maxSceneDuration = isKlingTurbo ? 10 : isKling ? 15 : isFast ? 20 : 10;
+    const minActionDur     = isFast ? 8 : 6;
+    const standardBeatDur  = isFast ? '12-14s' : isKling ? '6-10s' : '6-8s';
 
     const userContent = `Create a SMART scene plan for this documentary story:
 
@@ -482,9 +484,9 @@ CRITICAL RULES:
 
 PACING:
 - Climax moments: 4-5 scenes × ${maxSceneDuration}s, varied angles (wide→medium→close)
-- Action sequences: 5-6 scenes × 6s (rapid cuts)
+- Action sequences: 5-6 scenes × ${minActionDur}s (rapid cuts)
 - Dramatic reveals: 2-3 scenes (setup→hold→payoff)
-- Standard beats: 1-2 scenes × 6-8s
+- Standard beats: 1-2 scenes × ${standardBeatDur}
 
 Return ONLY this JSON. Every field must have a real, specific value — never "N/A", "none", or vague placeholders:
 {
@@ -497,7 +499,7 @@ Return ONLY this JSON. Every field must have a real, specific value — never "N
         "scene_number": 1,
         "narrative_beat": "hook",
         "importance": "critical",
-        "duration_seconds": 8,
+        "duration_seconds": ${isFast ? 14 : isKling ? 10 : isKlingTurbo ? 10 : 8},
         "shot_type": "wide",
         "camera_intent": "Slow push-in reveals scale of the fortress walls",
         "visual_description": "Torchlit stone ramparts at dusk, soldiers in formation on the battlements",
