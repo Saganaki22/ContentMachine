@@ -1460,7 +1460,25 @@ export const usePipelineStore = create(
           } : null,
           youtubeMetadata: project.metadata || null,
           selectedTitle: project.metadata?.selected_title || null,
-          selectedThumbnail: project.thumbnail || null,
+          // Restore selectedThumbnail as the [{ url, prompt, index }] array
+          // shape that selectThumbnail() produces. exportProject() serialises
+          // it as { selected_urls, selected_prompt, ... } so convert back.
+          // Restore thumbnails grid from all_thumbnails array so Export page
+          // shows the generated options, not a blank grid.
+          thumbnails: (() => {
+            const all = project.all_thumbnails || []
+            return Object.fromEntries(all.map((t, i) => [i, { url: t.url, prompt: t.prompt, loading: false, error: null }]))
+          })(),
+          // Restore selectedThumbnail as the [{ url, prompt, index }] array
+          // shape that selectThumbnail() produces. exportProject() serialises
+          // it as { selected_urls, selected_prompt, ... } so convert back.
+          selectedThumbnail: (() => {
+            const t = project.thumbnail
+            if (!t) return null
+            const urls = t.selected_urls || (t.selected_url ? [t.selected_url] : [])
+            if (!urls.length) return null
+            return urls.map((url, i) => ({ url, prompt: t.selected_prompt || '', index: i }))
+          })(),
           generationState: 'idle',
           generationPhase: null,
           imageProgress: { total: 0, completed: [], pending: [] },
@@ -1525,9 +1543,14 @@ export const usePipelineStore = create(
             }
           })(),
           settings: {
-            image_provider: state.settings.imageProvider,
-            image_model: state.settings.imageModel,
-            claude_provider: state.settings.claudeProvider
+            image_provider:   state.settings.imageProvider,
+            image_model:      state.settings.imageModel,
+            claude_provider:  state.settings.claudeProvider,
+            claude_model:     state.settings.claudeModel,
+            video_provider:   state.settings.videoProvider,
+            video_model:      state.settings.videoModel,
+            video_resolution: state.settings.videoResolution,
+            aspect_ratio:     state.settings.aspectRatio,
           }
         }
       },

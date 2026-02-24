@@ -5,6 +5,24 @@ import { usePipelineStore } from '../store/pipelineStore'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 
+// Offload ZIP extraction to a worker so the UI never freezes on large projects
+const importZipViaWorker = (file) => new Promise((resolve, reject) => {
+  const worker = new Worker(
+    new URL('../workers/zipImporter.worker.js', import.meta.url),
+    { type: 'module' }
+  )
+  worker.onmessage = (e) => {
+    worker.terminate()
+    if (e.data.ok) resolve(e.data.project)
+    else reject(new Error(e.data.error))
+  }
+  worker.onerror = (err) => {
+    worker.terminate()
+    reject(new Error(err.message))
+  }
+  worker.postMessage(file)
+})
+
 const steps = [
   { id: 'story', label: 'Story', path: '/' },
   { id: 'images', label: 'Images', path: '/images' },
@@ -155,14 +173,24 @@ function Layout({ children }) {
     const file = e.target.files?.[0]
     if (!file) return
 
-    try {
-      const text = await file.text()
-      const project = JSON.parse(text)
-      loadProject(project)
-      toast.success('Project loaded')
+    const isZip = file.name.endsWith('.zip') || file.type === 'application/zip'
+    const toastId = 'load-project'
 
-      // Navigate to the furthest completed step in the project
-      if (project.tts_script || (project.audio && Object.keys(project.audio?.sceneAudio || {}).length > 0)) {
+    try {
+      toast.loading(isZip ? 'Importing ZIP...' : 'Loading project...', { id: toastId })
+
+      let project
+      if (isZip) {
+        project = await importZipViaWorker(file)
+      } else {
+        project = JSON.parse(await file.text())
+      }
+
+      loadProject(project)
+      toast.success('Project loaded', { id: toastId })
+
+      // Navigate to the furthest completed step
+      if (project.tts_script || Object.keys(project.audio?.sceneAudio || {}).length > 0) {
         navigate('/audio')
       } else if (project.selected_videos && Object.keys(project.selected_videos).length > 0) {
         navigate('/videos')
@@ -171,8 +199,9 @@ function Layout({ children }) {
       } else if (project.story) {
         navigate('/')
       }
-    } catch {
-      toast.error('Invalid project file')
+    } catch (err) {
+      console.error('Load project error:', err)
+      toast.error(`Failed to load project: ${err.message}`, { id: toastId })
     }
 
     e.target.value = ''
@@ -296,7 +325,7 @@ function Layout({ children }) {
 
         {/* Right — actions */}
         <div className="w-44 flex items-center justify-end gap-1 shrink-0">
-          <input ref={fileInputRef} type="file" accept=".json" onChange={handleLoadProject} className="hidden" />
+          <input ref={fileInputRef} type="file" accept=".json,.zip" onChange={handleLoadProject} className="hidden" />
 
           {hasProgress && (
             <button

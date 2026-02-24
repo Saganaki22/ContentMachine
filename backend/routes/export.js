@@ -250,12 +250,34 @@ router.post('/zip', async (req, res) => {
     }
     
     // ============ ROOT - PROJECT FILE ============
-    // Full restorable snapshot — identical shape to what loadProject() expects,
-    // so the user can load this file back into the app to continue work.
+    // Restorable snapshot with base64 image data stripped out — images live as
+    // real files in images/all/ and images/selected/ inside the ZIP.
+    // The importer reconstructs state.images and state.selectedImages from those
+    // files by matching filenames back to sceneNum_promptIndex keys.
+    //
+    // Strip base64 from: images (all variants), selected_images, all_thumbnails,
+    // thumbnail urls, and audio (base64 audio blobs if any).
+    const stripUrl = (obj) => obj ? { ...obj, url: undefined } : obj
+
     const projectExport = {
       ...project,
-      version: 1,
+      version: 2,
       exported_at: new Date().toISOString(),
+      // images: strip url, keep prompt so UI knows what was used per variant
+      images: Object.fromEntries(
+        Object.entries(project.images || {}).map(([k, v]) => [k, stripUrl(v)])
+      ),
+      // selected_images: strip url, keep prompt + promptIndex for reference
+      selected_images: Object.fromEntries(
+        Object.entries(project.selected_images || {}).map(([k, v]) => [k, stripUrl(v)])
+      ),
+      // thumbnails: strip urls — thumbnail files are written to thumbnail/ folder
+      all_thumbnails: (project.all_thumbnails || []).map(t => stripUrl(t)),
+      thumbnail: project.thumbnail ? {
+        ...project.thumbnail,
+        selected_url: undefined,
+        selected_urls: undefined,
+      } : null,
     };
     archive.append(JSON.stringify(projectExport, null, 2), { name: 'project.json' });
     
