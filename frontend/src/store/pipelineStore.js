@@ -2,6 +2,22 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import api from '../services/api'
 
+// One session ID per browser tab — survives refresh but not tab close.
+// Format: session_YYYY-MM-DD_<random> so output folders are human-readable.
+const generateSessionId = () => {
+  const date = new Date().toISOString().slice(0, 10)
+  const rand = Math.random().toString(36).slice(2, 8)
+  return `session_${date}_${rand}`
+}
+const getSessionId = () => {
+  let id = sessionStorage.getItem('pipeline_session_id')
+  if (!id) {
+    id = generateSessionId()
+    sessionStorage.setItem('pipeline_session_id', id)
+  }
+  return id
+}
+
 // Convert any image URL to a base64 data URI so it survives in the saved JSON
 // even after CDN URLs (fal.ai, Replicate) expire. Gemini already returns base64.
 const toBase64DataUri = async (url) => {
@@ -373,6 +389,7 @@ export const usePipelineStore = create(
             }))
 
             set({ scenes })
+            get().autoSaveSession()  // scene plan + image prompts ready
           }
 
           // ── Step 2: Generate the actual images scene-by-scene ─────────────────
@@ -474,6 +491,7 @@ export const usePipelineStore = create(
                   }
                 }
               })
+              get().autoSaveSession()  // save after each scene's images complete
             } catch (error) {
               const imageUpdates = {}
               const keys = []
@@ -1151,6 +1169,7 @@ export const usePipelineStore = create(
                 }
               }
             })
+            get().autoSaveSession()  // save when each video finishes
           }
 
           return result
@@ -1386,6 +1405,7 @@ export const usePipelineStore = create(
             }
           })
           set({ thumbnails: newThumbnails })
+          get().autoSaveSession()  // save after thumbnails generated
         } catch (error) {
           // Mark all as failed
           const failed = {}
@@ -1635,6 +1655,18 @@ export const usePipelineStore = create(
             video_resolution: state.settings.videoResolution,
             aspect_ratio:     state.settings.aspectRatio,
           }
+        }
+      },
+
+      // Auto-save the current session to the backend output folder.
+      // Silent — never throws to the caller; logs errors only.
+      autoSaveSession: async () => {
+        try {
+          const sessionId = getSessionId()
+          const project = get().exportProject()
+          await api.saveSession(sessionId, project)
+        } catch (err) {
+          console.warn('Auto-save session failed (non-fatal):', err.message)
         }
       },
 

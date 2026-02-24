@@ -49,6 +49,7 @@ import videosRoutes from './routes/videos.js';
 import thumbnailRoutes from './routes/thumbnail.js';
 import exportRoutes from './routes/export.js';
 import elevenlabsRoutes from './routes/elevenlabs.js';
+import sessionRoutes from './routes/session.js';
 
 app.use('/api/settings', settingsRoutes);
 app.use('/api/claude', claudeRoutes);
@@ -57,6 +58,7 @@ app.use('/api/videos', videosRoutes);
 app.use('/api/thumbnail', thumbnailRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/elevenlabs', elevenlabsRoutes);
+app.use('/api/session', sessionRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error('Error:', err);

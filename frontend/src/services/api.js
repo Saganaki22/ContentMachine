@@ -137,4 +137,16 @@ const exportedApi = {
     })
 }
 
+exportedApi.saveSession = (sessionId, project) =>
+  api.post('/session/save', { sessionId, project }, { timeout: 300000 }).then(r => r.data)
+
+exportedApi.listSessions = () =>
+  api.get('/session/list').then(r => r.data)
+
+exportedApi.loadSession = (sessionId) =>
+  api.get(`/session/${sessionId}`).then(r => r.data)
+
+exportedApi.deleteSession = (sessionId) =>
+  api.delete(`/session/${sessionId}`).then(r => r.data)
+
 export default exportedApi
