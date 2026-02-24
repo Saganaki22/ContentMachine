@@ -606,7 +606,7 @@ function SceneImages() {
             </button>
             <button
               onClick={() => setShowExportModal(true)}
-              disabled={completedCount === 0}
+              disabled={imagesCompleteCount === 0}
               className="btn-secondary px-4 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Export Project

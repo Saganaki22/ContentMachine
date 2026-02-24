@@ -189,12 +189,16 @@ function Layout({ children }) {
       loadProject(project)
       toast.success('Project loaded', { id: toastId })
 
-      // Navigate to the furthest completed step
+      // Navigate to the furthest completed step.
+      // Check images by either selected_images OR images (all variants) having
+      // any entries — user may have generated images without selecting one yet.
+      const hasImages = Object.keys(project.selected_images || {}).length > 0
+        || Object.keys(project.images || {}).length > 0
       if (project.tts_script || Object.keys(project.audio?.sceneAudio || {}).length > 0) {
         navigate('/audio')
       } else if (project.selected_videos && Object.keys(project.selected_videos).length > 0) {
         navigate('/videos')
-      } else if (project.selected_images && Object.keys(project.selected_images).length > 0) {
+      } else if (hasImages) {
         navigate('/images')
       } else if (project.story) {
         navigate('/')
