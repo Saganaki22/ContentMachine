@@ -102,7 +102,9 @@ function Export() {
     setExporting(true)
     try {
       const project = exportProject()
-      await api.exportZip(project)
+      // Strip all-variants image blob — backend only needs selected_images.
+      const { images: _images, ...zipPayload } = project
+      await api.exportZip(zipPayload)
       toast.success('Project exported successfully!')
     } catch (error) {
       toast.error(`Export failed: ${error.message}`)

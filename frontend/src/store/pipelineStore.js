@@ -1447,7 +1447,7 @@ export const usePipelineStore = create(
           selectedStory: project.story || null,
           scenePlan: project.scene_plan || null,
           scenes: project.scenes || [],
-          images: {},   // not persisted — base64 blobs; selected_images carries the chosen ones
+          images: project.images || {},
           selectedImages: project.selected_images || {},
           videoPrompts: project.video_prompts || [],
           videoJobs,
@@ -1497,6 +1497,7 @@ export const usePipelineStore = create(
           story: state.selectedStory,
           scene_plan: state.scenePlan,
           scenes: state.scenes,
+          images: state.images,
           selected_images: state.selectedImages,
           video_prompts: state.videoPrompts,
           video_jobs: state.videoJobs,
