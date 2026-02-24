@@ -250,23 +250,12 @@ router.post('/zip', async (req, res) => {
     }
     
     // ============ ROOT - PROJECT FILE ============
+    // Full restorable snapshot — identical shape to what loadProject() expects,
+    // so the user can load this file back into the app to continue work.
     const projectExport = {
+      ...project,
       version: 1,
       exported_at: new Date().toISOString(),
-      title: project.story?.title,
-      story: project.story,
-      scene_plan: project.scene_plan,
-      scenes: project.scenes,
-      settings: project.settings,
-      summary: {
-        total_scenes: sceneNumbers.length,
-        total_duration_seconds: project.scene_plan?.total_duration_seconds || 0,
-        has_images: Object.keys(selectedImages).length,
-        has_videos: Object.keys(selectedVideos).length,
-        has_audio: Object.keys(audioData.scene_audio || {}).length > 0,
-        has_thumbnail: !!project.thumbnail?.selected_url,
-        has_metadata: !!project.metadata
-      }
     };
     archive.append(JSON.stringify(projectExport, null, 2), { name: 'project.json' });
     
