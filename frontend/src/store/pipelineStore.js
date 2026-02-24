@@ -58,6 +58,10 @@ export const usePipelineStore = create(
       imagesLoading: {},
       imagesError: null,
       imageBatches: [],        // [{ batchIndex, sceneNumbers, status: 'pending'|'running'|'done'|'failed', error }]
+      // imageHistory: keyed same as images ("sceneNum_promptIndex"), each value is
+      // an array of { url, prompt } entries oldest-first. The current images[key]
+      // is always the latest; history lets the user browse and re-select prior versions.
+      imageHistory: {},
 
       videoPrompts: [],
       videoPromptsLoading: false,
@@ -65,6 +69,8 @@ export const usePipelineStore = create(
       videoBatches: [],        // [{ batchIndex, sceneNumbers, status: 'pending'|'running'|'done'|'failed', error }]
       videoJobs: {},
       selectedVideos: {},
+      // videoHistory: keyed by sceneNumber, each value is array of { url, prompt } oldest-first
+      videoHistory: {},
       ttsScript: null,
       ttsLoading: false,
       ttsError: null,
@@ -77,6 +83,8 @@ export const usePipelineStore = create(
       metadataLoading: false,
       metadataError: null,
       thumbnailLoading: false,
+      // thumbnailHistory: keyed by thumbnail index, each value is array of { url, prompt } oldest-first
+      thumbnailHistory: {},
 
       audio: { sceneAudio: {}, sfxAudio: {} },
 
@@ -663,6 +671,13 @@ export const usePipelineStore = create(
           )
           const b64url = await toBase64DataUri(result.url)
           set((state) => {
+            // Push old image into history before overwriting
+            const oldEntry = state.images[key]
+            const prevHistory = state.imageHistory[key] || []
+            const newHistory = oldEntry?.url
+              ? [...prevHistory, { url: oldEntry.url, prompt: oldEntry.prompt }]
+              : prevHistory
+
             const updatedImages = {
               ...state.images,
               [key]: { url: b64url, prompt, error: null, loading: false }
@@ -673,9 +688,18 @@ export const usePipelineStore = create(
             if (existing && existing.promptIndex === promptIndex) {
               updatedSelectedImages[sceneNumber] = { url: b64url, prompt, promptIndex }
             }
+            // Save altered prompt back into scenes so it round-trips on export
+            const updatedScenes = state.scenes.map(s => {
+              if (s.scene_number !== sceneNumber) return s
+              const prompts = [...(s.prompts || [])]
+              prompts[promptIndex] = prompt
+              return { ...s, prompts }
+            })
             return {
               images: updatedImages,
+              imageHistory: { ...state.imageHistory, [key]: newHistory },
               selectedImages: updatedSelectedImages,
+              scenes: updatedScenes,
               imagesLoading: { ...state.imagesLoading, [key]: false }
             }
           })
@@ -807,15 +831,19 @@ export const usePipelineStore = create(
         set({ imagesLoading: {} })
       },
 
-      selectImage: (sceneNumber, promptIndex) => {
+      // urlOverride / promptOverride: used when user selects a historical version
+      // from the modal (not the current latest image[key])
+      selectImage: (sceneNumber, promptIndex, urlOverride, promptOverride) => {
         const key = `${sceneNumber}_${promptIndex}`
         const { images } = get()
         const image = images[key]
-        if (image?.url) {
+        const url    = urlOverride    ?? image?.url
+        const prompt = promptOverride ?? image?.prompt
+        if (url) {
           set((state) => ({
             selectedImages: {
               ...state.selectedImages,
-              [sceneNumber]: { url: image.url, prompt: image.prompt, promptIndex }
+              [sceneNumber]: { url, prompt, promptIndex }
             }
           }))
         }
@@ -1158,6 +1186,24 @@ export const usePipelineStore = create(
         })
       },
 
+      // Select a specific historical video version (url) as the active selected video
+      selectVideoVersion: (sceneNumber, url) => {
+        const { videoPrompts } = get()
+        const vp = videoPrompts.find(v => v.scene_number === sceneNumber)
+        if (url) {
+          set((state) => ({
+            selectedVideos: {
+              ...state.selectedVideos,
+              [sceneNumber]: {
+                url,
+                prompt: vp?.full_prompt_string || '',
+                duration: vp?.duration_seconds
+              }
+            }
+          }))
+        }
+      },
+
       regenerateVideo: async (sceneNumber, newPrompt) => {
         const { selectedImages, images, videoPrompts, settings } = get()
         const vp = videoPrompts.find(v => v.scene_number === sceneNumber)
@@ -1173,18 +1219,27 @@ export const usePipelineStore = create(
           || (imageKey && images[imageKey]?.url)
           || null
 
-        set((state) => ({
-          videoJobs: {
-            ...state.videoJobs,
-            [sceneNumber]: {
-              jobId: null,
-              status: 'pending',
-              url: null,
-              error: null,
-              provider: settings.videoProvider
+        // Push the current completed video into history before overwriting the job
+        set((state) => {
+          const oldJob = state.videoJobs[sceneNumber]
+          const prevHistory = state.videoHistory[sceneNumber] || []
+          const newHistory = oldJob?.url
+            ? [...prevHistory, { url: oldJob.url, prompt: vp?.full_prompt_string || '' }]
+            : prevHistory
+          return {
+            videoHistory: { ...state.videoHistory, [sceneNumber]: newHistory },
+            videoJobs: {
+              ...state.videoJobs,
+              [sceneNumber]: {
+                jobId: null,
+                status: 'pending',
+                url: null,
+                error: null,
+                provider: settings.videoProvider
+              }
             }
           }
-        }))
+        })
 
         try {
           const result = await api.regenerateVideo(
@@ -1198,22 +1253,31 @@ export const usePipelineStore = create(
             settings.videoModel
           )
 
-          set((state) => ({
-            videoJobs: {
-              ...state.videoJobs,
-              [sceneNumber]: {
-                jobId: result.job_id,
-                status: 'pending',
-                url: null,
-                error: null,
-                provider: settings.videoProvider,
-                falEndpoint: result.fal_endpoint || null,
-              }
-            },
-            // Ensure polling useEffect fires
-            generationState: 'running',
-            generationPhase: 'videos'
-          }))
+          set((state) => {
+            // Save altered prompt back into videoPrompts so it round-trips on export
+            const updatedVideoPrompts = state.videoPrompts.map(v =>
+              v.scene_number === sceneNumber && prompt
+                ? { ...v, full_prompt_string: prompt }
+                : v
+            )
+            return {
+              videoJobs: {
+                ...state.videoJobs,
+                [sceneNumber]: {
+                  jobId: result.job_id,
+                  status: 'pending',
+                  url: null,
+                  error: null,
+                  provider: settings.videoProvider,
+                  falEndpoint: result.fal_endpoint || null,
+                }
+              },
+              videoPrompts: updatedVideoPrompts,
+              // Ensure polling useEffect fires
+              generationState: 'running',
+              generationPhase: 'videos'
+            }
+          })
 
           return result
         } catch (error) {
@@ -1334,12 +1398,21 @@ export const usePipelineStore = create(
       },
 
       regenerateThumbnail: async (index, newPrompt, provider) => {
-        set((state) => ({
-          thumbnails: {
-            ...state.thumbnails,
-            [index]: { ...state.thumbnails[index], loading: true, error: null }
+        // Push old thumbnail into history before marking loading
+        set((state) => {
+          const old = state.thumbnails[index]
+          const prevHistory = state.thumbnailHistory[index] || []
+          const newHistory = old?.url
+            ? [...prevHistory, { url: old.url, prompt: old.prompt || '' }]
+            : prevHistory
+          return {
+            thumbnailHistory: { ...state.thumbnailHistory, [index]: newHistory },
+            thumbnails: {
+              ...state.thumbnails,
+              [index]: { ...old, loading: true, error: null }
+            }
           }
-        }))
+        })
 
         try {
           const { thumbnails, thumbnailPrompts, settings } = get()
@@ -1448,10 +1521,14 @@ export const usePipelineStore = create(
           scenePlan: project.scene_plan || null,
           scenes: project.scenes || [],
           images: project.images || {},
+          imageHistory: project.image_history || {},
           selectedImages: project.selected_images || {},
           videoPrompts: project.video_prompts || [],
           videoJobs,
+          videoHistory: project.video_history || {},
           selectedVideos,
+          imageBatches: project.image_batches || [],
+          imageProgress: project.image_progress || { total: 0, completed: [], pending: [] },
           ttsScript: project.tts_script ? {
             script: project.tts_script,
             scene_breakdown: project.tts_scene_breakdown || null,
@@ -1463,6 +1540,7 @@ export const usePipelineStore = create(
           // Restore selectedThumbnail as the [{ url, prompt, index }] array
           // shape that selectThumbnail() produces. exportProject() serialises
           // it as { selected_urls, selected_prompt, ... } so convert back.
+          thumbnailHistory: project.thumbnail_history || {},
           // Restore thumbnails grid from all_thumbnails array so Export page
           // shows the generated options, not a blank grid.
           thumbnails: (() => {
@@ -1516,14 +1594,19 @@ export const usePipelineStore = create(
           scene_plan: state.scenePlan,
           scenes: state.scenes,
           images: state.images,
+          image_history: state.imageHistory,
           selected_images: state.selectedImages,
           video_prompts: state.videoPrompts,
           video_jobs: state.videoJobs,
+          video_history: state.videoHistory,
           selected_videos: state.selectedVideos,
+          image_batches: state.imageBatches,
+          image_progress: state.imageProgress,
           tts_script: state.ttsScript?.script,
           tts_scene_breakdown: state.ttsScript?.scene_breakdown,
           audio: state.audio,
           all_thumbnails: Object.values(state.thumbnails).filter(t => t?.url),
+          thumbnail_history: state.thumbnailHistory,
           metadata: state.includeMetadata ? {
             selected_title: state.selectedTitle,
             all_titles: state.youtubeMetadata?.titles,
@@ -1567,12 +1650,14 @@ export const usePipelineStore = create(
           scenePlanError: null,
           scenes: [],
           images: {},
+          imageHistory: {},
           selectedImages: {},
           imagesError: null,
           videoPrompts: [],
           videoPromptsError: null,
           videoBatches: [],
           videoJobs: {},
+          videoHistory: {},
           selectedVideos: {},
           ttsScript: null,
           ttsError: null,
@@ -1581,6 +1666,7 @@ export const usePipelineStore = create(
           selectedTitle: null,
           thumbnailPrompts: [],
           thumbnails: {},
+          thumbnailHistory: {},
           selectedThumbnail: null,
           audio: { sceneAudio: {}, sfxAudio: {} },
           generationState: 'idle',

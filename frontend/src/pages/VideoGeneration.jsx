@@ -163,6 +163,7 @@ function VideoGeneration() {
     videoPromptsError,
     videoBatches,
     videoJobs,
+    videoHistory,
     selectedVideos,
     ttsScript,
     ttsLoading,
@@ -186,6 +187,7 @@ function VideoGeneration() {
     resetGeneration,
     stopGeneration,
     resumeVideoPolling,
+    selectVideoVersion,
   } = usePipelineStore()
 
   const completedCount = Object.values(videoJobs).filter(j => j.status === 'completed').length
@@ -691,14 +693,16 @@ function VideoGeneration() {
         {selectedModal !== null && (
           <VideoModal
             job={videoJobs[selectedModal]}
+            history={videoHistory[selectedModal] || []}
             videoPrompt={videoPrompts.find(v => v.scene_number === selectedModal)}
             sceneNumber={selectedModal}
             onClose={() => setSelectedModal(null)}
-            onRegenerate={() => {
-              regenerateVideo(selectedModal).catch(err =>
+            onRegenerate={(newPrompt) => {
+              regenerateVideo(selectedModal, newPrompt).catch(err =>
                 toast.error(`Regeneration failed: ${err.message}`)
               )
             }}
+            onSelectVersion={(url) => selectVideoVersion(selectedModal, url)}
           />
         )}
       </AnimatePresence>

@@ -189,6 +189,7 @@ function SceneImages() {
     scenePlanError,
     scenes,
     images,
+    imageHistory,
     selectedImages,
     imagesLoading,
     imagesError,
@@ -634,12 +635,13 @@ function SceneImages() {
         {selectedModal && (
           <ImageModal
             image={images[`${selectedModal.sceneNumber}_${selectedModal.promptIndex}`]}
+            history={imageHistory[`${selectedModal.sceneNumber}_${selectedModal.promptIndex}`] || []}
             onClose={() => setSelectedModal(null)}
             onRegenerate={(newPrompt) => {
               regenerateImage(selectedModal.sceneNumber, selectedModal.promptIndex, newPrompt)
                 .catch(err => toast.error(`Regeneration failed: ${err.message}`))
             }}
-            onSelect={() => selectImage(selectedModal.sceneNumber, selectedModal.promptIndex)}
+            onSelect={(url, prompt) => selectImage(selectedModal.sceneNumber, selectedModal.promptIndex, url, prompt)}
           />
         )}
       </AnimatePresence>

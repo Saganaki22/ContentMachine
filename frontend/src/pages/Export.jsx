@@ -4,6 +4,91 @@ import { usePipelineStore } from '../store/pipelineStore'
 import toast from 'react-hot-toast'
 import api from '../services/api'
 
+// Lightbox with history navigation for thumbnails.
+// versions: [{url, prompt}] oldest-first, last entry is latest.
+function ThumbnailLightbox({ versions, slotIndex, selectedThumbnail, onSelect, onClose }) {
+  const [viewIndex, setViewIndex] = useState(versions.length - 1)
+
+  useEffect(() => {
+    const handleKey = (e) => {
+      if (e.key === 'Escape')      onClose()
+      if (e.key === 'ArrowLeft')   setViewIndex(i => Math.max(0, i - 1))
+      if (e.key === 'ArrowRight')  setViewIndex(i => Math.min(versions.length - 1, i + 1))
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [onClose, versions.length])
+
+  const viewed   = versions[viewIndex]
+  const isLatest = viewIndex === versions.length - 1
+  const total    = versions.length
+  const sel      = Array.isArray(selectedThumbnail) ? selectedThumbnail : selectedThumbnail ? [selectedThumbnail] : []
+  const isSelected = sel.some(t => t.index === slotIndex)
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.92 }} transition={{ duration: 0.15 }}
+        className="relative max-w-5xl w-full"
+        onClick={e => e.stopPropagation()}
+      >
+        <img src={viewed?.url} alt="" className="w-full rounded-xl shadow-2xl" />
+
+        {/* Left arrow */}
+        {total > 1 && viewIndex > 0 && (
+          <button
+            onClick={() => setViewIndex(i => i - 1)}
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 bg-black/60 hover:bg-black/80 rounded-full flex items-center justify-center text-white transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+        )}
+
+        {/* Right arrow */}
+        {total > 1 && !isLatest && (
+          <button
+            onClick={() => setViewIndex(i => i + 1)}
+            className="absolute right-16 top-1/2 -translate-y-1/2 w-9 h-9 bg-black/60 hover:bg-black/80 rounded-full flex items-center justify-center text-white transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
+
+        <div className="absolute top-3 right-3 flex gap-2">
+          <button
+            onClick={onSelect}
+            className="px-3 py-1.5 bg-accent text-white text-xs font-medium rounded-lg shadow-lg hover:bg-accent-hover transition-colors"
+          >
+            {isSelected ? 'Deselect' : 'Select for export'}
+          </button>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center bg-black/60 text-white rounded-lg hover:bg-black/80 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <p className="text-center text-xs text-white/50 mt-3">
+          Thumbnail {slotIndex + 1}
+          {total > 1 ? ` · Version ${viewIndex + 1} of ${total}${isLatest ? ' (latest)' : ''}` : ''}
+        </p>
+      </motion.div>
+    </motion.div>
+  )
+}
+
 function Export() {
   const [thumbnailProvider, setThumbnailProvider] = useState('fal')
   const [customTag, setCustomTag] = useState('')
@@ -19,6 +104,7 @@ function Export() {
     selectedTitle,
     thumbnailPrompts,
     thumbnails,
+    thumbnailHistory,
     selectedThumbnail,
     includeThumbnail,
     includeMetadata,
@@ -474,50 +560,23 @@ function Export() {
         )}
       </div>
 
-      {/* Thumbnail lightbox */}
+      {/* Thumbnail lightbox with history navigation */}
       <AnimatePresence>
-        {lightboxIndex !== null && thumbnails[lightboxIndex]?.url && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-6"
-              onClick={() => setLightboxIndex(null)}
-            >
-              <motion.div
-                initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.92 }} transition={{ duration: 0.15 }}
-                className="relative max-w-5xl w-full"
-                onClick={e => e.stopPropagation()}
-              >
-                <img
-                  src={thumbnails[lightboxIndex].url}
-                  alt=""
-                  className="w-full rounded-xl shadow-2xl"
-                />
-                <div className="absolute top-3 right-3 flex gap-2">
-                  <button
-                    onClick={() => { selectThumbnail(lightboxIndex); setLightboxIndex(null) }}
-                    className="px-3 py-1.5 bg-accent text-white text-xs font-medium rounded-lg shadow-lg hover:bg-accent-hover transition-colors"
-                  >
-                    {(() => {
-                      const sel = Array.isArray(selectedThumbnail) ? selectedThumbnail : selectedThumbnail ? [selectedThumbnail] : []
-                      return sel.some(t => t.index === lightboxIndex) ? 'Deselect' : 'Select for export'
-                    })()}
-                  </button>
-                  <button
-                    onClick={() => setLightboxIndex(null)}
-                    className="w-8 h-8 flex items-center justify-center bg-black/60 text-white rounded-lg hover:bg-black/80 transition-colors"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-                <p className="text-center text-xs text-white/50 mt-3">Thumbnail {lightboxIndex + 1}</p>
-              </motion.div>
-            </motion.div>
-          </>
-        )}
+        {lightboxIndex !== null && (() => {
+          const hist = thumbnailHistory?.[lightboxIndex] || []
+          const current = thumbnails[lightboxIndex]
+          const allVersions = [...hist, ...(current?.url ? [{ url: current.url, prompt: current.prompt }] : [])]
+          if (!allVersions.length) return null
+          return (
+            <ThumbnailLightbox
+              versions={allVersions}
+              slotIndex={lightboxIndex}
+              selectedThumbnail={selectedThumbnail}
+              onSelect={() => { selectThumbnail(lightboxIndex); setLightboxIndex(null) }}
+              onClose={() => setLightboxIndex(null)}
+            />
+          )
+        })()}
       </AnimatePresence>
 
       {/* Bottom bar */}
