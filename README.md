@@ -85,7 +85,7 @@ Topic Input
 │  3. IMAGE GENERATION                                │
 │     4 variations per scene (establishing, intimate, │
 │     detail, atmospheric) — select the best one      │
-│     All images saved as base64 in project JSON      │
+│     All images saved as real PNG/JPG files in ZIP   │
 └─────────────────────────────────────────────────────┘
     │
     ▼
@@ -93,7 +93,7 @@ Topic Input
 │  4. VIDEO GENERATION                                │
 │     Image-to-video, 2 scenes at a time              │
 │     Multiple models available — select best clip    │
-│     Video URLs saved in project JSON                │
+│     Browse previous versions with ← → arrows        │
 └─────────────────────────────────────────────────────┘
     │
     ▼
@@ -106,13 +106,16 @@ Topic Input
 ┌─────────────────────────────────────────────────────┐
 │  6. EXPORT                                          │
 │     YouTube metadata · multi-select thumbnails      │
-│     Full ZIP: videos + images + audio + script      │
+│     Full ZIP: videos + images/selected + images/all │
+│     + audio + script + restorable project.json      │
 └─────────────────────────────────────────────────────┘
 ```
 
 ### Visual Style
 
-Every scene uses **seamless glossy porcelain mannequins** — a distinctive cinematic aesthetic that sidesteps realistic human likeness while maintaining dramatic storytelling. Figures are always fully clothed in period-accurate outfits, with no visible joints, stands, or supports. Photorealistic environments, ray tracing, cinematic lighting. this is a great starting point if you are youtube focused since it doesn't depict realistic scenes that may have been altered. You may fully customise and finetune your prompts to your own style & liking in the start page (story page) by expanding advanced settings.
+The default aesthetic uses **seamless glossy porcelain mannequins** — figures always fully clothed in period-accurate outfits including explicitly named footwear (e.g. "iron-buckled brown leather knee boots"), no visible joints, stands, or supports. Photorealistic environments, ray tracing, cinematic lighting. A great starting point for YouTube-focused creators since it avoids depicting realistic scenes that may have been altered.
+
+The visual style is fully customisable: expand **Advanced — Customize System Prompts** on the start page to edit the image prompt rules for any character type. Pair this with the **Character Base Images** feature (see below) to lock in a consistent look across every scene.
 
 ---
 
@@ -142,7 +145,7 @@ Every scene uses **seamless glossy porcelain mannequins** — a distinctive cine
 |---|---|---|
 | **fal.ai** *(WIP)* | LTX-2 image-to-video | Not fully verified |
 | **Replicate** | LTX-2 Pro | With generated audio, 6–10s |
-| **Replicate** | LTX-2 Fast | 6–20s in 2s steps |
+| **Replicate** | LTX-2 Fast | 6–20s in 2s steps, favours 12–20s |
 | **Replicate** | Kling v3 | 3–15s, standard/pro mode, AI audio |
 | **Replicate** | Kling v2.5 Turbo Pro | 5s or 10s only |
 
@@ -231,21 +234,38 @@ ContentMachine/
 │       ├── elevenlabs.js        TTS narration + SFX generation
 │       ├── thumbnail.js         Thumbnail image generation
 │       ├── export.js            ZIP packaging (streams to browser)
+│       ├── session.js           Auto-save sessions to output/ folder
 │       └── settings.js          API key management
+│
+├── output/                      Auto-saved sessions (one folder per session)
+│   └── session_YYYY-MM-DD_xxx/
+│       ├── session.json         Restorable project state
+│       ├── images/selected/     Chosen image per scene (PNG/JPG)
+│       ├── images/all/          All 4 generated variants per scene
+│       ├── images/history/      Previously regenerated image versions
+│       ├── videos/              Current selected video per scene (MP4)
+│       ├── videos/history/      Previously regenerated video versions
+│       └── thumbnails/          Generated thumbnail images + history
 │
 └── frontend/src/
     ├── pages/
-    │   ├── StorySelect.jsx      Step 1 — topic input, story selection, aspect ratio, advanced prompts
-    │   ├── SceneImages.jsx      Step 2 — image generation + selection
+    │   ├── StorySelect.jsx      Step 1 — topic input, story selection, aspect ratio, character images, advanced prompts
+    │   ├── SceneImages.jsx      Step 2 — image generation + selection + export
     │   ├── VideoGeneration.jsx  Step 3 — video generation + narration script
     │   ├── AudioGeneration.jsx  Step 4 — TTS voiceover (optional)
     │   └── Export.jsx           Step 5 — thumbnail, metadata, ZIP export
     ├── components/
-    │   └── Layout.jsx           Header, nav, settings drawer, GitHub link, footer
+    │   ├── Layout.jsx           Header, nav, settings drawer, session browser, footer
+    │   ├── ImageModal.jsx       Full-screen image viewer with history navigation
+    │   ├── VideoModal.jsx       Full-screen video viewer with history navigation
+    │   └── ExportModal.jsx      Shared export modal (available from images page onwards)
     ├── store/
     │   └── pipelineStore.js     Zustand global state + all async actions
-    └── services/
-        └── api.js               Axios client for all backend calls
+    ├── services/
+    │   └── api.js               Axios client for all backend calls
+    └── workers/
+        ├── zipImporter.worker.js   ZIP extraction off main thread (JSZip + base64)
+        └── jsonSerializer.worker.js  (legacy, retained for reference)
 ```
 
 ---
@@ -268,28 +288,51 @@ ContentMachine/
 - **JSON repair** — truncated or malformed LLM output is auto-repaired before parsing
 - **Live scene count estimate** — estimated scene count shown on the start screen as you adjust video length
 
+### Regeneration History
+- **Version history for images, videos, and thumbnails** — every time you regenerate, the previous version is saved automatically
+- **← → arrow navigation** — browse all previous versions of any image, video clip, or thumbnail in the full-screen modal
+- **Select any version** — the version you are viewing when you click Select is the one that gets used; you are never locked into the latest regeneration
+- **Prompt saved per version** — the exact prompt used for each version is shown and preserved; editing the prompt before regenerating updates it in the project
+- **History survives export** — all previous image versions are included in the ZIP (`images/history/`) and round-trip through session save/load
+
 ### Video Models (Replicate)
 - **LTX-2 Pro** — 6/8/10s, generated audio
-- **LTX-2 Fast** — 6–20s in 2s steps, generated audio
+- **LTX-2 Fast** — 6–20s in 2s steps, scene planner biased toward 12–20s to make full use of the model
 - **Kling v3** — 3–15s integer, standard/pro mode, AI audio, uses start image
 - **Kling v2.5 Turbo Pro** — 5s or 10s only, fast turnaround, uses start image
 
-### Project Management
-- **Save project as JSON** — all images stored as base64 (never expired CDN links), video URLs preserved
-- **Load project** — fully restores pipeline state including images, videos, selections, and script; navigates to the correct step automatically
-- **Safe load** — loading a completed project never triggers new API requests or charges
+### Project Management & Session Auto-Save
+- **Auto-save sessions** — the app automatically saves your entire session to the `output/` folder on the backend after every image batch, every completed video, and after thumbnails generate; a 60-second fallback timer catches anything in between
+- **Session browser** — click the clock icon in the header to browse all auto-saved sessions by date; click any session to restore it instantly, or delete sessions you no longer need
+- **Images and videos saved as real files** — auto-saved sessions store every generated image AND video to disk (`images/all/`, `images/selected/`, `images/history/`, `videos/`, `videos/history/`, `thumbnails/`) — no base64 bloat, files are immediately viewable in your file explorer
+- **ZIP export** — export at any stage (even from the images page before generating videos); ZIP contains:
+  - `images/selected/scene_NN.jpg` — your chosen image per scene
+  - `images/all/scene_NN_vN.jpg` — all 4 generated variants per scene
+  - `images/history/` — previously regenerated image versions
+  - `videos/scene_NN_v1.mp4`, `scene_NN_selected.mp4` — all generated video versions per scene
+  - `videos/history/` — previously regenerated video versions
+  - `audio/`, `thumbnail/selected/`, `thumbnail/all/`
+  - `project.json` — fully restorable project state (no base64 — images are the real files)
+- **ZIP import** — load a ZIP back into the app; extraction runs in a Web Worker so the UI never freezes; all images, videos, and thumbnails are restored and you continue exactly where you left off
+- **Load project** — the Load button (folder icon) accepts both `.zip` and `.json` files; navigates automatically to the furthest completed step
+- **Safe load** — loading a project never triggers new API requests or charges
 - **Browser persistence** — Zustand state survives page reloads via localStorage
 
-> **Important — save early and export promptly:**
->
-> Some video providers (including Replicate) **delete generated videos from their servers within a few hours** of generation. Once the URL expires, the video is gone. Always export your ZIP before closing the session.
->
-> You can also **save the project JSON at any point during the pipeline** — not just at the end. The JSON embeds all generated images as base64 data, so your images are permanently saved inside the file regardless of CDN expiry. If you need to stop mid-session, save the JSON, close the app, and load it later to pick up exactly where you left off — no images will be re-generated and no API charges incurred on load.
+> **Note on video URL expiry:**
+> Some video providers (including Replicate) delete generated videos from their servers within a few hours of generation. Once the URL expires, the video is gone. Always export your ZIP or let the auto-save session capture the video URL before closing the tab. Images are always saved as real files and never expire.
 
 ### API Keys
 - **Saved in localStorage** — keys auto-loaded into the backend on every session start, no re-entry needed
 - **Per-key Clear button** — red clear button removes a key from localStorage and the backend instantly
 - **Validate before saving** — Test button checks each key is valid before storing
+
+### Character Base Images
+- **Upload reference images** — upload a male and/or female character reference (JPG, PNG, WebP, max 10 MB each) on the start page
+- **Works for any character style** — mannequins, realistic humans, anime characters, or anything else; describe the style in the optional **Character style** text field and the model follows it
+- **Sent with every scene** — reference images are included with every image generation request so the model preserves the character's proportions, tone, and hair across all scenes
+- **Scene clothing always overridden** — each scene still gets its own era-correct clothing and pose from the scene plan; only the character appearance is locked in
+- **Model-aware delivery** — Nano Banana Pro (Replicate & fal) and Gemini receive the actual images as multimodal input; all other models receive a text consistency hint instead
+- **Resets with "Start Fresh"** — character images and description are cleared when starting a new project
 
 ### Customization
 - **Advanced System Prompts** — expandable section on the start page with editable textareas for all 7 pipeline stages (story selection, scene planning, image prompts, video prompts, narration script, YouTube metadata, thumbnail prompts)
@@ -298,9 +341,10 @@ ContentMachine/
 - **Custom prompts persist** — saved to localStorage, survive page reloads
 
 ### Export
-- **ZIP export** — videos, selected images, audio, thumbnails, narration script, metadata, and project JSON all in one download
+- **ZIP export** — available from the images page onwards; no need to complete every step before exporting
+- **Restorable project.json inside ZIP** — load the ZIP back into the app at any time to continue where you left off
 - **Multi-select thumbnails** — pick one or several thumbnails for export
-- **Thumbnail lightbox** — click any thumbnail to view full size, select/deselect from the lightbox
+- **Thumbnail lightbox with history** — view full size, browse previous regenerated versions with arrows, select/deselect from the lightbox
 - **Generate thumbnail without metadata** — thumbnail generation works even if the metadata step was skipped
 - **YouTube metadata** — 4 title options, SEO description, tags, chapter timestamps — all editable before export
 

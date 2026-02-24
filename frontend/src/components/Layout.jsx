@@ -5,6 +5,24 @@ import { usePipelineStore } from '../store/pipelineStore'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 
+// Offload ZIP extraction to a worker so the UI never freezes on large projects
+const importZipViaWorker = (file) => new Promise((resolve, reject) => {
+  const worker = new Worker(
+    new URL('../workers/zipImporter.worker.js', import.meta.url),
+    { type: 'module' }
+  )
+  worker.onmessage = (e) => {
+    worker.terminate()
+    if (e.data.ok) resolve(e.data.project)
+    else reject(new Error(e.data.error))
+  }
+  worker.onerror = (err) => {
+    worker.terminate()
+    reject(new Error(err.message))
+  }
+  worker.postMessage(file)
+})
+
 const steps = [
   { id: 'story', label: 'Story', path: '/' },
   { id: 'images', label: 'Images', path: '/images' },
@@ -26,6 +44,9 @@ function Layout({ children }) {
   const location = useLocation()
   const fileInputRef = useRef(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [sessions, setSessions] = useState([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
 
   // On mount: push any localStorage-cached API keys to the backend
   useEffect(() => {
@@ -39,6 +60,14 @@ function Layout({ children }) {
       }).catch(() => {})
     }
   }, [])
+
+  // 60s auto-save fallback — catches anything not covered by event triggers
+  useEffect(() => {
+    const interval = setInterval(() => {
+      autoSaveSession()
+    }, 60_000)
+    return () => clearInterval(interval)
+  }, [autoSaveSession])
 
   const {
     selectedStory,
@@ -55,7 +84,7 @@ function Layout({ children }) {
     resumeImageGeneration,
     resumeVideoGeneration,
     loadProject,
-    exportProject,
+    autoSaveSession,
   } = usePipelineStore()
 
   const isRunning  = generationState === 'running'
@@ -94,28 +123,6 @@ function Layout({ children }) {
 
   const currentStepIndex = steps.findIndex(s => s.path === location.pathname)
 
-  const handleSaveProject = () => {
-    try {
-      const project = exportProject()
-      const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      const date = new Date().toISOString().split('T')[0]
-      const title = selectedStory?.title || 'project'
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 30)
-      link.download = `${slug}_${date}.json`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      URL.revokeObjectURL(url)
-      toast.success('Project saved')
-    } catch (err) {
-      toast.error('Failed to save project')
-    }
-  }
-
-  const hasProgress = !!(selectedStory || Object.keys(selectedImages || {}).length > 0)
 
   const getStepState = (index) => {
     if (index === 0) return selectedStory ? 'completed' : currentStepIndex === 0 ? 'active' : 'upcoming'
@@ -129,28 +136,90 @@ function Layout({ children }) {
     if (getStepState(index) === 'completed') navigate(steps[index].path)
   }
 
-  const handleLoadProject = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
+  const handleOpenSessions = async () => {
+    setSessionsOpen(true)
+    setSessionsLoading(true)
     try {
-      const text = await file.text()
-      const project = JSON.parse(text)
-      loadProject(project)
-      toast.success('Project loaded')
+      const data = await api.listSessions()
+      setSessions(data.sessions || [])
+    } catch {
+      toast.error('Failed to load sessions')
+    }
+    setSessionsLoading(false)
+  }
 
-      // Navigate to the furthest completed step in the project
-      if (project.tts_script || (project.audio && Object.keys(project.audio?.sceneAudio || {}).length > 0)) {
+  const handleLoadSession = async (sessionId) => {
+    const toastId = 'load-session'
+    setSessionsOpen(false)
+    try {
+      toast.loading('Loading session...', { id: toastId })
+      const project = await api.loadSession(sessionId)
+      loadProject(project)
+      toast.success('Session loaded', { id: toastId })
+      const hasImages = Object.keys(project.selected_images || {}).length > 0
+        || Object.keys(project.images || {}).length > 0
+      if (project.tts_script || Object.keys(project.audio?.sceneAudio || {}).length > 0) {
         navigate('/audio')
       } else if (project.selected_videos && Object.keys(project.selected_videos).length > 0) {
         navigate('/videos')
-      } else if (project.selected_images && Object.keys(project.selected_images).length > 0) {
+      } else if (hasImages) {
         navigate('/images')
       } else if (project.story) {
         navigate('/')
       }
+    } catch (err) {
+      toast.error(`Failed to load session: ${err.message}`, { id: toastId })
+    }
+  }
+
+  const handleDeleteSession = async (e, sessionId) => {
+    e.stopPropagation()
+    try {
+      await api.deleteSession(sessionId)
+      setSessions(prev => prev.filter(s => s.id !== sessionId))
+      toast.success('Session deleted')
     } catch {
-      toast.error('Invalid project file')
+      toast.error('Failed to delete session')
+    }
+  }
+
+  const handleLoadProject = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const isZip = file.name.endsWith('.zip') || file.type === 'application/zip'
+    const toastId = 'load-project'
+
+    try {
+      toast.loading(isZip ? 'Importing ZIP...' : 'Loading project...', { id: toastId })
+
+      let project
+      if (isZip) {
+        project = await importZipViaWorker(file)
+      } else {
+        project = JSON.parse(await file.text())
+      }
+
+      loadProject(project)
+      toast.success('Project loaded', { id: toastId })
+
+      // Navigate to the furthest completed step.
+      // Check images by either selected_images OR images (all variants) having
+      // any entries — user may have generated images without selecting one yet.
+      const hasImages = Object.keys(project.selected_images || {}).length > 0
+        || Object.keys(project.images || {}).length > 0
+      if (project.tts_script || Object.keys(project.audio?.sceneAudio || {}).length > 0) {
+        navigate('/audio')
+      } else if (project.selected_videos && Object.keys(project.selected_videos).length > 0) {
+        navigate('/videos')
+      } else if (hasImages) {
+        navigate('/images')
+      } else if (project.story) {
+        navigate('/')
+      }
+    } catch (err) {
+      console.error('Load project error:', err)
+      toast.error(`Failed to load project: ${err.message}`, { id: toastId })
     }
 
     e.target.value = ''
@@ -162,7 +231,20 @@ function Layout({ children }) {
 
         {/* Left — generation controls */}
         <div className="w-44 flex items-center gap-2 shrink-0">
-          <AnimatePresence>
+      {/* Sessions browser */}
+      <AnimatePresence>
+        {sessionsOpen && (
+          <SessionsPanel
+            sessions={sessions}
+            loading={sessionsLoading}
+            onLoad={handleLoadSession}
+            onDelete={handleDeleteSession}
+            onClose={() => setSessionsOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
             {isActive && (
               <motion.div
                 initial={{ opacity: 0, x: -8 }}
@@ -274,27 +356,26 @@ function Layout({ children }) {
 
         {/* Right — actions */}
         <div className="w-44 flex items-center justify-end gap-1 shrink-0">
-          <input ref={fileInputRef} type="file" accept=".json" onChange={handleLoadProject} className="hidden" />
+          <input ref={fileInputRef} type="file" accept=".json,.zip" onChange={handleLoadProject} className="hidden" />
 
-          {hasProgress && (
-            <button
-              onClick={handleSaveProject}
-              title="Save project"
-              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-raised text-text-secondary hover:text-text-primary transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
-              </svg>
-            </button>
-          )}
 
           <button
             onClick={() => fileInputRef.current?.click()}
-            title="Load project"
+            title="Load project (JSON or ZIP)"
             className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-raised text-text-secondary hover:text-text-primary transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+          </button>
+
+          <button
+            onClick={handleOpenSessions}
+            title="Browse auto-saved sessions"
+            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-raised text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </button>
 
@@ -383,7 +464,7 @@ const GEMINI_IMAGE_MODELS = [
 
 const REPLICATE_VIDEO_MODELS = [
   { value: 'lightricks/ltx-2-pro', label: 'LTX-2 Pro (best quality)' },
-  { value: 'lightricks/ltx-2-fast', label: 'LTX-2 Fast (cheaper · up to 20s)' },
+  { value: 'lightricks/ltx-2-fast', label: 'LTX-2 Fast (cheaper · 6–20s)' },
   { value: 'kwaivgi/kling-v3-video', label: 'Kling v3 (cinematic · up to 15s)' },
   { value: 'kwaivgi/kling-v2.5-turbo-pro', label: 'Kling 2.5 Turbo Pro (5s or 10s)' },
 ]
@@ -748,6 +829,106 @@ function SettingsDrawer({ onClose }) {
           <button onClick={handleSave} disabled={saving} className="w-full btn-primary py-2.5 text-sm font-medium">
             {saving ? 'Saving...' : 'Save Settings'}
           </button>
+        </div>
+      </motion.div>
+    </>
+  )
+}
+
+// ── Sessions browser panel ──────────────────────────────────────────────────
+function SessionsPanel({ sessions, loading, onLoad, onDelete, onClose }) {
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  const fmt = (iso) => {
+    if (!iso) return '—'
+    const d = new Date(iso)
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50"
+        onClick={onClose}
+      />
+      <motion.div
+        initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}
+        className="fixed top-16 right-4 z-50 w-96 bg-surface border border-border rounded-xl shadow-2xl overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+          <div>
+            <h2 className="text-sm font-semibold text-text-primary">Auto-saved Sessions</h2>
+            <p className="text-[10px] text-text-disabled mt-0.5">Saved automatically to the output/ folder</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-surface-raised text-text-secondary">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="max-h-[70vh] overflow-y-auto">
+          {loading ? (
+            <div className="p-6 text-center text-sm text-text-disabled">Loading...</div>
+          ) : sessions.length === 0 ? (
+            <div className="p-6 text-center text-sm text-text-disabled">
+              No saved sessions yet.<br />
+              <span className="text-[10px]">Sessions save automatically as you generate content.</span>
+            </div>
+          ) : (
+            <ul className="divide-y divide-border">
+              {sessions.map(s => (
+                <li
+                  key={s.id}
+                  onClick={() => onLoad(s.id)}
+                  className="flex items-start gap-3 px-4 py-3 hover:bg-surface-raised cursor-pointer transition-colors group"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary truncate">{s.title}</p>
+                    <p className="text-[10px] text-text-disabled mt-0.5">{fmt(s.saved_at)}</p>
+                    <div className="flex gap-2 mt-1">
+                      {s.scene_count > 0 && (
+                        <span className="text-[9px] bg-surface-raised border border-border rounded px-1.5 py-0.5 text-text-secondary">
+                          {s.scene_count} scenes
+                        </span>
+                      )}
+                      {s.has_images && (
+                        <span className="text-[9px] bg-surface-raised border border-border rounded px-1.5 py-0.5 text-text-secondary">
+                          images
+                        </span>
+                      )}
+                      {s.has_videos && (
+                        <span className="text-[9px] bg-surface-raised border border-border rounded px-1.5 py-0.5 text-text-secondary">
+                          videos
+                        </span>
+                      )}
+                      {s.has_thumbnail && (
+                        <span className="text-[9px] bg-surface-raised border border-border rounded px-1.5 py-0.5 text-text-secondary">
+                          thumbnail
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => onDelete(e, s.id)}
+                    className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center rounded text-error hover:bg-error/10 transition-all shrink-0 mt-0.5"
+                    title="Delete session"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </motion.div>
     </>

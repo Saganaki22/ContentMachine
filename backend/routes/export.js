@@ -85,37 +85,85 @@ router.post('/zip', async (req, res) => {
     });
     
     const selectedImages = project.selected_images || {};
+    const allImages = project.images || {};       // keyed "sceneNum_promptIndex"
     const selectedVideos = project.selected_videos || {};
     const sceneNumbers = [...new Set([
-      ...Object.keys(selectedImages), 
-      ...Object.keys(selectedVideos)
+      ...Object.keys(selectedImages),
+      ...Object.keys(selectedVideos),
+      ...Object.keys(allImages).map(k => k.split('_')[0])
     ])].sort((a, b) => Number(a) - Number(b));
-    
-    // ============ IMAGES FOLDER ============
+
+    // ============ IMAGES/SELECTED FOLDER ============
     for (const sceneNum of sceneNumbers) {
       const image = selectedImages[sceneNum];
       if (image?.url) {
         try {
           const stream = await fetchUrlToStream(image.url);
-          const ext = image.url.startsWith('data:') 
+          const ext = image.url.startsWith('data:')
             ? (image.url.startsWith('data:image/png') ? 'png' : 'jpg')
             : getExtFromUrl(image.url, 'jpg');
-          archive.append(stream, { name: `images/scene_${String(sceneNum).padStart(2, '0')}.${ext}` });
+          archive.append(stream, { name: `images/selected/scene_${String(sceneNum).padStart(2, '0')}.${ext}` });
         } catch (e) {
-          console.error(`Failed to fetch image ${sceneNum}:`, e.message);
+          console.error(`Failed to fetch selected image ${sceneNum}:`, e.message);
         }
+      }
+    }
+
+    // ============ IMAGES/ALL FOLDER (all generated variants) ============
+    for (const [key, image] of Object.entries(allImages)) {
+      if (!image?.url) continue;
+      // key is "sceneNum_promptIndex" e.g. "3_2"
+      const [sceneNum, promptIndex] = key.split('_');
+      const variantNum = Number(promptIndex) + 1;
+      try {
+        const stream = await fetchUrlToStream(image.url);
+        const ext = image.url.startsWith('data:')
+          ? (image.url.startsWith('data:image/png') ? 'png' : 'jpg')
+          : getExtFromUrl(image.url, 'jpg');
+        archive.append(stream, {
+          name: `images/all/scene_${String(sceneNum).padStart(2, '0')}_v${variantNum}.${ext}`
+        });
+      } catch (e) {
+        console.error(`Failed to fetch variant image ${key}:`, e.message);
       }
     }
     
     // ============ VIDEOS FOLDER ============
+    // Write all versions for each scene: history versions first, then the
+    // currently-selected one last (always named _selected so editors can
+    // identify the chosen cut immediately).
+    //   videos/scene_02_v1.mp4   ← oldest regenerated version
+    //   videos/scene_02_v2.mp4   ← next version
+    //   videos/scene_02_selected.mp4  ← currently selected (may duplicate a vN file)
+    const videoHistory = project.video_history || {};
     for (const sceneNum of sceneNumbers) {
+      const history = videoHistory[sceneNum] || [];
+      // Write historical versions
+      for (let i = 0; i < history.length; i++) {
+        const hv = history[i];
+        if (!hv?.url) continue;
+        try {
+          const stream = await fetchUrlToStream(hv.url);
+          archive.append(stream, {
+            name: `videos/scene_${String(sceneNum).padStart(2, '0')}_v${i + 1}.mp4`
+          });
+        } catch (e) {
+          console.error(`Failed to fetch video history ${sceneNum} v${i + 1}:`, e.message);
+        }
+      }
+      // Write the currently selected version
       const video = selectedVideos[sceneNum];
       if (video?.url) {
         try {
           const stream = await fetchUrlToStream(video.url);
-          archive.append(stream, { name: `videos/scene_${String(sceneNum).padStart(2, '0')}.mp4` });
+          const vLabel = history.length > 0
+            ? `_v${history.length + 1}_selected`
+            : '_selected';
+          archive.append(stream, {
+            name: `videos/scene_${String(sceneNum).padStart(2, '0')}${vLabel}.mp4`
+          });
         } catch (e) {
-          console.error(`Failed to fetch video ${sceneNum}:`, e.message);
+          console.error(`Failed to fetch selected video ${sceneNum}:`, e.message);
         }
       }
     }
@@ -158,25 +206,41 @@ router.post('/zip', async (req, res) => {
     }
     
     // ============ THUMBNAIL FOLDER ============
-    // Export all user-selected thumbnails (multi-select supported)
+    // thumbnail/selected/  — the thumbnail(s) the user explicitly picked
+    // thumbnail/all/       — every generated thumbnail so none are lost
     const selectedUrls = project.thumbnail?.selected_urls || 
       (project.thumbnail?.selected_url ? [project.thumbnail.selected_url] : []);
-    
+
     for (let i = 0; i < selectedUrls.length; i++) {
       const url = selectedUrls[i];
-      if (url) {
-        try {
-          const stream = await fetchUrlToStream(url);
-          const ext = url.startsWith('data:')
-            ? (url.startsWith('data:image/png') ? 'png' : 'jpg')
-            : getExtFromUrl(url, 'jpg');
-          const filename = selectedUrls.length === 1
-            ? `thumbnail/thumbnail.${ext}`
-            : `thumbnail/thumbnail_${i + 1}.${ext}`;
-          archive.append(stream, { name: filename });
-        } catch (e) {
-          console.error(`Failed to fetch thumbnail ${i + 1}:`, e.message);
-        }
+      if (!url) continue;
+      try {
+        const stream = await fetchUrlToStream(url);
+        const ext = url.startsWith('data:')
+          ? (url.startsWith('data:image/png') ? 'png' : 'jpg')
+          : getExtFromUrl(url, 'jpg');
+        const filename = selectedUrls.length === 1
+          ? `thumbnail/selected/thumbnail.${ext}`
+          : `thumbnail/selected/thumbnail_${i + 1}.${ext}`;
+        archive.append(stream, { name: filename });
+      } catch (e) {
+        console.error(`Failed to fetch selected thumbnail ${i + 1}:`, e.message);
+      }
+    }
+
+    // All generated thumbnails (the full grid, regardless of selection)
+    const allThumbnails = project.all_thumbnails || [];
+    for (let i = 0; i < allThumbnails.length; i++) {
+      const thumb = allThumbnails[i];
+      if (!thumb?.url) continue;
+      try {
+        const stream = await fetchUrlToStream(thumb.url);
+        const ext = thumb.url.startsWith('data:')
+          ? (thumb.url.startsWith('data:image/png') ? 'png' : 'jpg')
+          : getExtFromUrl(thumb.url, 'jpg');
+        archive.append(stream, { name: `thumbnail/all/thumbnail_${i + 1}.${ext}` });
+      } catch (e) {
+        console.error(`Failed to fetch thumbnail ${i + 1}:`, e.message);
       }
     }
     
@@ -229,23 +293,34 @@ router.post('/zip', async (req, res) => {
     }
     
     // ============ ROOT - PROJECT FILE ============
+    // Restorable snapshot with base64 image data stripped out — images live as
+    // real files in images/all/ and images/selected/ inside the ZIP.
+    // The importer reconstructs state.images and state.selectedImages from those
+    // files by matching filenames back to sceneNum_promptIndex keys.
+    //
+    // Strip base64 from: images (all variants), selected_images, all_thumbnails,
+    // thumbnail urls, and audio (base64 audio blobs if any).
+    const stripUrl = (obj) => obj ? { ...obj, url: undefined } : obj
+
     const projectExport = {
-      version: 1,
+      ...project,
+      version: 2,
       exported_at: new Date().toISOString(),
-      title: project.story?.title,
-      story: project.story,
-      scene_plan: project.scene_plan,
-      scenes: project.scenes,
-      settings: project.settings,
-      summary: {
-        total_scenes: sceneNumbers.length,
-        total_duration_seconds: project.scene_plan?.total_duration_seconds || 0,
-        has_images: Object.keys(selectedImages).length,
-        has_videos: Object.keys(selectedVideos).length,
-        has_audio: Object.keys(audioData.scene_audio || {}).length > 0,
-        has_thumbnail: !!project.thumbnail?.selected_url,
-        has_metadata: !!project.metadata
-      }
+      // images: strip url, keep prompt so UI knows what was used per variant
+      images: Object.fromEntries(
+        Object.entries(project.images || {}).map(([k, v]) => [k, stripUrl(v)])
+      ),
+      // selected_images: strip url, keep prompt + promptIndex for reference
+      selected_images: Object.fromEntries(
+        Object.entries(project.selected_images || {}).map(([k, v]) => [k, stripUrl(v)])
+      ),
+      // thumbnails: strip urls — thumbnail files are written to thumbnail/ folder
+      all_thumbnails: (project.all_thumbnails || []).map(t => stripUrl(t)),
+      thumbnail: project.thumbnail ? {
+        ...project.thumbnail,
+        selected_url: undefined,
+        selected_urls: undefined,
+      } : null,
     };
     archive.append(JSON.stringify(projectExport, null, 2), { name: 'project.json' });
     
@@ -256,8 +331,9 @@ Generated: ${new Date().toISOString()}
 
 ## Folder Structure
 
-- \`images/\` - Selected scene images (one per scene)
-- \`videos/\` - Generated video clips (one per scene)
+- \`images/selected/\` - Chosen scene image (one per scene)
+- \`images/all/\` - All generated variants for every scene (up to 4 per scene)
+- \`videos/\` - All generated video versions per scene (_v1, _v2, … _selected)
 - \`audio/\` - Narration and sound effects
   - \`narration/\` - Scene-by-scene voiceover
   - \`sfx/\` - Sound effects
