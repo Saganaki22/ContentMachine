@@ -85,25 +85,46 @@ router.post('/zip', async (req, res) => {
     });
     
     const selectedImages = project.selected_images || {};
+    const allImages = project.images || {};       // keyed "sceneNum_promptIndex"
     const selectedVideos = project.selected_videos || {};
     const sceneNumbers = [...new Set([
-      ...Object.keys(selectedImages), 
-      ...Object.keys(selectedVideos)
+      ...Object.keys(selectedImages),
+      ...Object.keys(selectedVideos),
+      ...Object.keys(allImages).map(k => k.split('_')[0])
     ])].sort((a, b) => Number(a) - Number(b));
-    
-    // ============ IMAGES FOLDER ============
+
+    // ============ IMAGES/SELECTED FOLDER ============
     for (const sceneNum of sceneNumbers) {
       const image = selectedImages[sceneNum];
       if (image?.url) {
         try {
           const stream = await fetchUrlToStream(image.url);
-          const ext = image.url.startsWith('data:') 
+          const ext = image.url.startsWith('data:')
             ? (image.url.startsWith('data:image/png') ? 'png' : 'jpg')
             : getExtFromUrl(image.url, 'jpg');
-          archive.append(stream, { name: `images/scene_${String(sceneNum).padStart(2, '0')}.${ext}` });
+          archive.append(stream, { name: `images/selected/scene_${String(sceneNum).padStart(2, '0')}.${ext}` });
         } catch (e) {
-          console.error(`Failed to fetch image ${sceneNum}:`, e.message);
+          console.error(`Failed to fetch selected image ${sceneNum}:`, e.message);
         }
+      }
+    }
+
+    // ============ IMAGES/ALL FOLDER (all generated variants) ============
+    for (const [key, image] of Object.entries(allImages)) {
+      if (!image?.url) continue;
+      // key is "sceneNum_promptIndex" e.g. "3_2"
+      const [sceneNum, promptIndex] = key.split('_');
+      const variantNum = Number(promptIndex) + 1;
+      try {
+        const stream = await fetchUrlToStream(image.url);
+        const ext = image.url.startsWith('data:')
+          ? (image.url.startsWith('data:image/png') ? 'png' : 'jpg')
+          : getExtFromUrl(image.url, 'jpg');
+        archive.append(stream, {
+          name: `images/all/scene_${String(sceneNum).padStart(2, '0')}_v${variantNum}.${ext}`
+        });
+      } catch (e) {
+        console.error(`Failed to fetch variant image ${key}:`, e.message);
       }
     }
     
@@ -256,7 +277,8 @@ Generated: ${new Date().toISOString()}
 
 ## Folder Structure
 
-- \`images/\` - Selected scene images (one per scene)
+- \`images/selected/\` - Chosen scene image (one per scene)
+- \`images/all/\` - All generated variants for every scene (up to 4 per scene)
 - \`videos/\` - Generated video clips (one per scene)
 - \`audio/\` - Narration and sound effects
   - \`narration/\` - Scene-by-scene voiceover

@@ -14,11 +14,7 @@ function ExportModal({ onClose }) {
     setExporting(true)
     try {
       const project = exportProject()
-      // Strip all-variants image blob — backend only needs selected_images.
-      // Omitting it keeps the ZIP payload small so thumbnails and images
-      // aren't silently dropped due to payload size.
-      const { images: _images, ...zipPayload } = project
-      await api.exportZip(zipPayload)
+      await api.exportZip(project)
       toast.success('Project exported')
       onClose()
     } catch (error) {
