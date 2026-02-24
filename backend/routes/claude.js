@@ -413,7 +413,7 @@ CRITICAL CONSTRAINT: Video durations can ONLY be ${allowedDurations} seconds. No
 
 JSON FIELD RULES (MANDATORY):
 - NEVER use "N/A", "none", "unknown", or empty strings for any field.
-- clothing: ALWAYS specify a real period-accurate outfit (e.g. "leather merchant apron and linen shirt", "silk nobleman doublet with breeches"). No placeholders.
+- clothing: ALWAYS specify a COMPLETE head-to-toe period-accurate outfit. MANDATORY components: (1) upper body garment, (2) lower body garment, (3) NAMED footwear with type (e.g. "brown leather ankle boots", "iron-buckled black leather oxfords", "worn canvas sandals", "knee-high riding boots", "hobnail leather brogues"). Example: "coarse wool tunic, dark linen breeches, worn brown leather ankle boots". NEVER leave any component unspecified. NEVER omit footwear.
 - action: ALWAYS describe a specific physical action (e.g. "raises torch above head", "kneels examining ground").
 - weather: ALWAYS use a real condition (e.g. "clear", "overcast", "light rain", "heavy fog", "scorching sun").
 - time_of_day: ALWAYS use a real time (e.g. "dawn", "midday", "dusk", "night", "golden hour").
@@ -503,7 +503,7 @@ Return ONLY this JSON. Every field must have a real, specific value — never "N
         "mannequin_details": {
           "count": 2,
           "action": "stands at attention gripping spear, scanning the horizon",
-          "clothing": "iron chainmail hauberk over linen gambeson, iron helmet, leather boots",
+          "clothing": "iron chainmail hauberk over linen gambeson with iron helmet, rough wool breeches, iron-buckled brown leather knee boots",
           "porcelain_tone": "off-white"
         },
         "environment": {
@@ -537,7 +537,7 @@ VISUAL STYLE MANDATE (NON-NEGOTIABLE):
 - Faces: Featureless smooth porcelain surface (no eyes, nose, mouth details carved in).
 - Skin tone: Off-white/cream porcelain OR warm brown porcelain depending on character ethnicity. NEVER realistic human skin colors.
 - Hair: Mannequins CAN have painted or sculpted hair appropriate to the character and era.
-- CRITICAL CLOTHING RULE: Mannequins MUST ALWAYS be fully clothed in complete, period-accurate outfits. Include full garments: shirts, jackets, pants, skirts, dresses, coats, hats, shoes, boots as appropriate for the era and scene. NEVER show bare mannequin bodies or incomplete clothing. The clothing should be highly detailed and realistic.
+- CRITICAL CLOTHING RULE: Mannequins MUST ALWAYS be fully clothed in complete, period-accurate outfits from head to toe. MANDATORY: (1) upper body garment explicitly named, (2) lower body garment explicitly named (trousers, breeches, skirt, etc.), (3) NAMED footwear with specific type (e.g. "brown leather ankle boots", "iron-buckled knee-high riding boots", "worn canvas sandals", "hobnail leather brogues", "pointed black leather court shoes") — NEVER just "shoes" or "boots" without qualifier. Use the exact clothing from mannequin_details.clothing in full. NEVER show bare legs, bare feet, or incomplete lower-body clothing. The entire outfit must be visible and highly detailed.
 - Pose: Body language and gestures convey emotion despite featureless faces.
 
 CRITICAL: Do NOT include "Unreal Engine 5" or any engine names as text in the image.
@@ -618,10 +618,11 @@ Atmospheric / rendering texture:
 - Heat haze / atmospheric distortion: Shimmering air above hot surfaces
 
 COMPOSITION FRAMEWORK:
-"Photorealistic render, ray tracing, Octane render, [lens + camera angle + shot type], [environment/weather], fully clothed seamless glossy porcelain mannequin in [detailed period-accurate clothing] showing EXACTLY what narrator describes, [specific lighting setup], [atmospheric texture], [props], 8K resolution, [DOF specification], no visible stands or supports, hyperrealistic"
+"Photorealistic render, ray tracing, Octane render, [lens + camera angle + shot type], [environment/weather], fully clothed seamless glossy porcelain mannequin in [complete period-accurate outfit: upper garment + lower garment + named footwear type] showing EXACTLY what narrator describes, [specific lighting setup], [atmospheric texture], [props], 8K resolution, [DOF specification], no visible stands or supports, hyperrealistic"
 
 MANDATORY RULES FOR EVERY PROMPT (ALL 4 VARIATIONS PER SCENE):
-- EVERY prompt must contain "seamless glossy porcelain mannequin" with the exact clothing from mannequin_details.clothing
+- EVERY prompt must contain "seamless glossy porcelain mannequin" with the FULL outfit from mannequin_details.clothing — upper garment, lower garment, AND named footwear type (e.g. "brown leather ankle boots", not just "boots")
+- NEVER omit lower-body clothing or footwear — mannequins must NEVER appear bare-legged or bare-footed
 - EVERY prompt must include "featureless smooth porcelain face, no eyes/nose/mouth"
 - EVERY prompt must include the specific action from mannequin_details.action
 - EVERY prompt must include "8K resolution, no visible stands or supports, hyperrealistic"
