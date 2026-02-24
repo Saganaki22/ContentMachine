@@ -138,16 +138,6 @@ router.post('/save', async (req, res) => {
     }
 
     // ── Save thumbnails ──────────────────────────────────────────────────
-    for (const [idx, thumb] of Object.entries(snapshot.all_thumbnails || {}).concat(
-      // also handle thumbnails keyed by index
-      Object.entries(
-        Array.isArray(snapshot.all_thumbnails)
-          ? {}
-          : {}
-      )
-    )) {
-      // all_thumbnails is an array
-    }
     if (Array.isArray(snapshot.all_thumbnails)) {
       for (let i = 0; i < snapshot.all_thumbnails.length; i++) {
         const thumb = snapshot.all_thumbnails[i]
@@ -188,10 +178,47 @@ router.post('/save', async (req, res) => {
       } catch {}
     }
 
-    // ── Videos are HTTP URLs — just keep as-is (CDN links) ──────────────
-    // Video files can be large; we don't download them on every auto-save.
-    // They are preserved as CDN URLs in session.json.
-    // (If CDN link expires the user can re-generate; videos are also in ZIP export)
+    // ── Save videos to disk ──────────────────────────────────────────────
+    // Download all video versions (current + history) so nothing is lost if
+    // CDN links expire. Videos are written to videos/ and videos/history/.
+    for (const [sceneNum, job] of Object.entries(snapshot.video_jobs || {})) {
+      if (!job?.url) continue
+      const relPath = `videos/scene_${pad(sceneNum)}_selected.mp4`
+      try {
+        const saved = await saveAsset(job.url, relPath, sessionDir)
+        if (saved) job.url = `__session_file__/${saved}`
+      } catch (e) {
+        console.warn(`Session save: failed to write video ${sceneNum}:`, e.message)
+      }
+    }
+
+    for (const [sceneNum, job] of Object.entries(snapshot.selected_videos || {})) {
+      if (!job?.url || job.url.startsWith('__session_file__')) continue
+      // If video_jobs already wrote this URL to disk, skip (same URL)
+      const existingJob = snapshot.video_jobs?.[sceneNum]
+      if (existingJob?.url?.startsWith('__session_file__')) continue
+      const relPath = `videos/scene_${pad(sceneNum)}_selected.mp4`
+      try {
+        const saved = await saveAsset(job.url, relPath, sessionDir)
+        if (saved) job.url = `__session_file__/${saved}`
+      } catch (e) {
+        console.warn(`Session save: failed to write selected video ${sceneNum}:`, e.message)
+      }
+    }
+
+    for (const [sceneNum, entries] of Object.entries(snapshot.video_history || {})) {
+      for (let i = 0; i < (entries || []).length; i++) {
+        const entry = entries[i]
+        if (!entry?.url) continue
+        const relPath = `videos/history/scene_${pad(sceneNum)}_v${i + 1}.mp4`
+        try {
+          const saved = await saveAsset(entry.url, relPath, sessionDir)
+          if (saved) entry.url = `__session_file__/${saved}`
+        } catch (e) {
+          console.warn(`Session save: failed to write video history ${sceneNum}[${i}]:`, e.message)
+        }
+      }
+    }
 
     // ── Write session metadata ───────────────────────────────────────────
     snapshot._session = {

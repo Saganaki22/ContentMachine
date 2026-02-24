@@ -129,14 +129,41 @@ router.post('/zip', async (req, res) => {
     }
     
     // ============ VIDEOS FOLDER ============
+    // Write all versions for each scene: history versions first, then the
+    // currently-selected one last (always named _selected so editors can
+    // identify the chosen cut immediately).
+    //   videos/scene_02_v1.mp4   ← oldest regenerated version
+    //   videos/scene_02_v2.mp4   ← next version
+    //   videos/scene_02_selected.mp4  ← currently selected (may duplicate a vN file)
+    const videoHistory = project.video_history || {};
     for (const sceneNum of sceneNumbers) {
+      const history = videoHistory[sceneNum] || [];
+      // Write historical versions
+      for (let i = 0; i < history.length; i++) {
+        const hv = history[i];
+        if (!hv?.url) continue;
+        try {
+          const stream = await fetchUrlToStream(hv.url);
+          archive.append(stream, {
+            name: `videos/scene_${String(sceneNum).padStart(2, '0')}_v${i + 1}.mp4`
+          });
+        } catch (e) {
+          console.error(`Failed to fetch video history ${sceneNum} v${i + 1}:`, e.message);
+        }
+      }
+      // Write the currently selected version
       const video = selectedVideos[sceneNum];
       if (video?.url) {
         try {
           const stream = await fetchUrlToStream(video.url);
-          archive.append(stream, { name: `videos/scene_${String(sceneNum).padStart(2, '0')}.mp4` });
+          const vLabel = history.length > 0
+            ? `_v${history.length + 1}_selected`
+            : '_selected';
+          archive.append(stream, {
+            name: `videos/scene_${String(sceneNum).padStart(2, '0')}${vLabel}.mp4`
+          });
         } catch (e) {
-          console.error(`Failed to fetch video ${sceneNum}:`, e.message);
+          console.error(`Failed to fetch selected video ${sceneNum}:`, e.message);
         }
       }
     }
@@ -179,25 +206,41 @@ router.post('/zip', async (req, res) => {
     }
     
     // ============ THUMBNAIL FOLDER ============
-    // Export all user-selected thumbnails (multi-select supported)
+    // thumbnail/selected/  — the thumbnail(s) the user explicitly picked
+    // thumbnail/all/       — every generated thumbnail so none are lost
     const selectedUrls = project.thumbnail?.selected_urls || 
       (project.thumbnail?.selected_url ? [project.thumbnail.selected_url] : []);
-    
+
     for (let i = 0; i < selectedUrls.length; i++) {
       const url = selectedUrls[i];
-      if (url) {
-        try {
-          const stream = await fetchUrlToStream(url);
-          const ext = url.startsWith('data:')
-            ? (url.startsWith('data:image/png') ? 'png' : 'jpg')
-            : getExtFromUrl(url, 'jpg');
-          const filename = selectedUrls.length === 1
-            ? `thumbnail/thumbnail.${ext}`
-            : `thumbnail/thumbnail_${i + 1}.${ext}`;
-          archive.append(stream, { name: filename });
-        } catch (e) {
-          console.error(`Failed to fetch thumbnail ${i + 1}:`, e.message);
-        }
+      if (!url) continue;
+      try {
+        const stream = await fetchUrlToStream(url);
+        const ext = url.startsWith('data:')
+          ? (url.startsWith('data:image/png') ? 'png' : 'jpg')
+          : getExtFromUrl(url, 'jpg');
+        const filename = selectedUrls.length === 1
+          ? `thumbnail/selected/thumbnail.${ext}`
+          : `thumbnail/selected/thumbnail_${i + 1}.${ext}`;
+        archive.append(stream, { name: filename });
+      } catch (e) {
+        console.error(`Failed to fetch selected thumbnail ${i + 1}:`, e.message);
+      }
+    }
+
+    // All generated thumbnails (the full grid, regardless of selection)
+    const allThumbnails = project.all_thumbnails || [];
+    for (let i = 0; i < allThumbnails.length; i++) {
+      const thumb = allThumbnails[i];
+      if (!thumb?.url) continue;
+      try {
+        const stream = await fetchUrlToStream(thumb.url);
+        const ext = thumb.url.startsWith('data:')
+          ? (thumb.url.startsWith('data:image/png') ? 'png' : 'jpg')
+          : getExtFromUrl(thumb.url, 'jpg');
+        archive.append(stream, { name: `thumbnail/all/thumbnail_${i + 1}.${ext}` });
+      } catch (e) {
+        console.error(`Failed to fetch thumbnail ${i + 1}:`, e.message);
       }
     }
     
@@ -290,7 +333,7 @@ Generated: ${new Date().toISOString()}
 
 - \`images/selected/\` - Chosen scene image (one per scene)
 - \`images/all/\` - All generated variants for every scene (up to 4 per scene)
-- \`videos/\` - Generated video clips (one per scene)
+- \`videos/\` - All generated video versions per scene (_v1, _v2, … _selected)
 - \`audio/\` - Narration and sound effects
   - \`narration/\` - Scene-by-scene voiceover
   - \`sfx/\` - Sound effects
